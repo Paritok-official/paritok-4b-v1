@@ -1,0 +1,12 @@
+{
+  "name": "file-read-review",
+  "version": "1.0.0",
+  "description": "Manual quality review for file_read compression",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

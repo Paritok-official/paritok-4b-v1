@@ -1,0 +1,85 @@
+# ═══════════════════════════════════════════════════════════════
+# Paritok .gitignore
+# Scope: 4B SFT only. GRPO / DPO / 3B / 7B kept locally but not on GitHub.
+# ═══════════════════════════════════════════════════════════════
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*~
+
+# ── 训练数据(GitHub 不放,用户 regenerate)──
+# data_pipeline/ 内部的任何 jsonl 都当训练数据
+data_pipeline/*.jsonl
+data_pipeline/**/*.jsonl
+# 老 update/ 目录本地保留(内容都 mv 走了,还剩训练数据 jsonl)
+update/
+
+# ── 训练输出 ──
+training/models/checkpoint-2000/optimizer.pt
+training/models/checkpoint-2000/rng_state.pth
+training/models/checkpoint-2000/scheduler.pt
+training/models/checkpoint-2000/trainer_state.json
+training/models/checkpoint-2000/training_args.bin
+training/models/checkpoint-2000-merged/
+training/models/grpo-qwen3-4b/
+training/models/grpo-qwen3-4b-*/
+training/models/sft-qwen3-4b/
+training/models/*.zip
+training/models/*.log
+
+# ── GRPO / DPO / 3B / 7B(本地保留,不上 GitHub)──
+training/train_grpo.py
+training/reward.py
+training/configs/grpo_config.yaml
+deploy_grpo.sh
+analysis/measure_r_ce_curve.py
+deploy_sft_3b.sh
+deploy_sft_7b.sh
+training/configs/sft_config_coder3b.yaml
+training/configs/sft_config_coder7b.yaml
+training/train_dpo.py
+training/configs/dpo_config_*
+
+# ── Eval(内部代理指标,与 README 的 SWE-bench 数字不同体系,不上 GitHub)──
+eval/
+
+# ── 环境变量 ──
+.env
+*.env
+!.env.example
+
+# ── 临时 / scratch ──
+tool-results/
+scratchpad/
+tmp/
+*.log
+!README*.md
+!docs/*.md
+
+# ── HF Hub 上传的大模型文件(GitHub 100MB 限制,只保留 adapter_config.json)──
+training/models/checkpoint-2000/adapter_model.safetensors
+training/models/checkpoint-2000/added_tokens.json
+training/models/checkpoint-2000/chat_template.jinja
+training/models/checkpoint-2000/merges.txt
+training/models/checkpoint-2000/README.md
+training/models/checkpoint-2000/special_tokens_map.json
+training/models/checkpoint-2000/tokenizer.json
+training/models/checkpoint-2000/tokenizer_config.json
+training/models/checkpoint-2000/vocab.json

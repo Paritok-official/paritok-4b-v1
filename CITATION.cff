@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - name: "Paritok Team"
+title: "Paritok: Fine-tuned Compression for AI Coding-Agent Context"
+version: "4B-v1"
+date-released: 2026-07-15
+url: "https://github.com/Paritok2026/paritok-4b-v1"
+license: Apache-2.0

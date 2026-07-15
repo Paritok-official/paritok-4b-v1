@@ -1,0 +1,105 @@
+# ============================================================
+# Paritok Training Environment
+# Python: 3.10 or 3.11 (3.12+ has issues with some flash-attn builds)
+# CUDA:   12.1+ recommended for training stage
+# ============================================================
+
+# -------- Core: HuggingFace ecosystem --------
+# datasets: 用于 load_dataset / load_from_disk / parquet 处理
+datasets>=2.20.0,<3.5.0
+# transformers: tokenizer + 后续训练加载底座
+transformers>=4.45.0,<4.50.0
+# huggingface-hub: 下载/上传模型，配合 datasets 使用
+huggingface-hub>=0.25.0,<0.28.0
+# accelerate: 多 GPU / mixed precision 训练
+accelerate>=0.34.0,<1.2.0
+# tokenizers: transformers 依赖，显式钉版本避免 BPE 行为差异
+tokenizers>=0.20.0,<0.22.0
+# safetensors: 现代模型权重格式
+safetensors>=0.4.5
+
+# -------- Data processing --------
+# pyarrow: parquet 读写，HF datasets 底层依赖
+pyarrow>=15.0.0,<19.0.0
+# pandas: 探查 / sanity check 用
+pandas>=2.0.0,<2.3.0
+# numpy: 钉 <2.0 因为很多包还没适配 numpy 2.x
+numpy>=1.24.0,<2.0.0
+# orjson: jsonl 流式处理快 5-10x
+orjson>=3.10.0
+# regex: 比标准 re 更快、支持更多特性，给 must_keep_rules 用
+regex>=2024.7.24
+
+# -------- Tokenizer-specific deps --------
+# Qwen2.5 / Qwen3 tokenizer 需要
+tiktoken>=0.7.0
+sentencepiece>=0.2.0
+protobuf>=4.25.0,<6.0.0
+
+# -------- LLM API clients (Week 2 蒸馏) --------
+# openai SDK 也用于 DeepSeek（兼容协议）
+openai>=1.40.0,<2.0.0
+# 本地 retry / rate limiting
+tenacity>=8.5.0
+# 可选：Anthropic SDK，如果用 Claude API
+anthropic>=0.34.0,<1.0.0
+
+# -------- Training (Week 3+) --------
+# torch: CUDA 12.1 build；如果你用 CUDA 11.8 改用 +cu118
+# 注意：torch 不要写在 requirements.txt 里，建议单独装（见下面说明）
+# torch>=2.4.0,<2.6.0
+
+# trl: SFT/DPO/GRPO 训练库，HuggingFace 官方
+trl>=0.11.0,<0.13.0
+# peft: LoRA / QLoRA，省显存
+peft>=0.12.0,<0.15.0
+# bitsandbytes: 8-bit / 4-bit 量化训练
+bitsandbytes>=0.43.0,<0.45.0
+# deepspeed: ZeRO-3 多 GPU 训练（可选但强烈推荐）
+deepspeed>=0.15.0,<0.17.0
+
+# -------- Inference / serving (Week 5+) --------
+# vllm: 高吞吐推理，rollout 阶段必备
+# 注意：vllm 与 torch 版本耦合很紧，建议训练完毕后单独 conda 环境装
+# vllm>=0.6.0,<0.7.0
+
+# -------- Evaluation --------
+# llmlingua: baseline，对比用
+llmlingua>=0.2.2
+# evaluate: BLEU / ROUGE / BERTScore 等指标
+evaluate>=0.4.0
+# bert-score: 论文里用的语义相似度指标
+bert-score>=0.3.13
+# python-Levenshtein: action args 编辑距离用
+python-Levenshtein>=0.25.0
+# tree-sitter: AST diff 等价性判断用（v1 阶段才必需）
+tree-sitter>=0.23.0
+tree-sitter-python>=0.23.0
+
+# -------- Utilities --------
+# tqdm: 进度条
+tqdm>=4.66.0
+# pyyaml: 配置文件
+pyyaml>=6.0.1
+# rich: 终端美化输出，debugging 友好
+rich>=13.7.0
+# click: CLI 入口（可选）
+click>=8.1.0
+# python-dotenv: 管理 API key
+python-dotenv>=1.0.0
+
+# -------- Logging / experiment tracking --------
+# wandb: 训练曲线追踪，开源项目几乎必备
+wandb>=0.17.0
+# tensorboard: 备选 logger
+tensorboard>=2.17.0
+
+# -------- Code analysis (用于 segmenter 启发式) --------
+# 用于 patch 解析、AST 处理
+unidiff>=0.7.5
+
+# -------- Testing / dev --------
+pytest>=8.0.0
+pytest-xdist>=3.6.0  # 并行跑 test
+ipython>=8.20.0
+jupyter>=1.0.0

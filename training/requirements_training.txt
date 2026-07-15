@@ -1,0 +1,20 @@
+# Training-only deps. Install on RunPod pod AFTER base PyTorch is already there.
+# Use the pod's pre-installed torch (don't reinstall — version-pinned to CUDA driver).
+#
+# Recommended pod: "RunPod PyTorch 2.4" template, 1x H100 80GB or 1x H200.
+#
+# Install (in this order — unsloth pulls compatible bitsandbytes/xformers):
+#   pip install --upgrade --no-cache-dir unsloth unsloth_zoo
+#   pip install -r training/requirements_training.txt
+
+trl>=0.20.0                  # SFTTrainer / SFTConfig / DPOTrainer; >=0.20 required for transformers 5.x compatibility
+peft>=0.13.0                  # LoRA adapter API (unsloth uses it under the hood)
+accelerate>=0.34.0            # multi-gpu + mixed precision plumbing
+transformers>=4.50.3,<4.55.0  # tokenizer + apply_chat_template; >=4.50.3 required by unsloth (Qwen3 support)
+datasets>=2.20.0,<3.5.0       # Dataset.from_list
+bitsandbytes>=0.44.0          # adamw_8bit optimizer (unsloth may pin its own version)
+safetensors>=0.4.5            # checkpoint serialization
+
+pyyaml>=6.0.1
+tqdm>=4.66.0
+orjson>=3.10.0                # optional; only used by data prep scripts, harmless here

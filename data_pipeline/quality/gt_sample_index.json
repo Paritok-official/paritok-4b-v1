@@ -1,0 +1,164 @@
+[
+  {
+    "entry_id": "chatcmpl-a90b0a274259775b81dac86e716dd535_t3__s55",
+    "label": "L0-med-kept-code",
+    "level": "L0",
+    "action": "KEPT",
+    "ctype": "code_with_docstring",
+    "size": "L",
+    "chars": 2086
+  },
+  {
+    "entry_id": "chatcmpl-5df9290405feea252228d3ee23074a02_t6__s91",
+    "label": "L0-dropped-code",
+    "level": "L0",
+    "action": "DROPPED",
+    "ctype": "code",
+    "size": "M",
+    "chars": 1345
+  },
+  {
+    "entry_id": "chatcmpl-b3e66fb6f6882628ab74ea7aaaf6de32_t3__s31",
+    "label": "L1-kept-code",
+    "level": "L1",
+    "action": "KEPT",
+    "ctype": "code_listing",
+    "size": "M",
+    "chars": 1194
+  },
+  {
+    "entry_id": "chatcmpl-68c57349a5cc84d429e4ca90460d0cf6_t2__s27",
+    "label": "L1-kept-docstring",
+    "level": "L1",
+    "action": "KEPT",
+    "ctype": "code_with_docstring",
+    "size": "L",
+    "chars": 2285
+  },
+  {
+    "entry_id": "chatcmpl-399319065673ff7e16f2e837b759de5f_t4__s79",
+    "label": "L1-dropped-imports",
+    "level": "L1",
+    "action": "DROPPED",
+    "ctype": "code_listing",
+    "size": "M",
+    "chars": 1459
+  },
+  {
+    "entry_id": "chatcmpl-a03fb9eaa2c31f0a3ce1958b13af9475_t6__s63",
+    "label": "L1-dropped-code",
+    "level": "L1",
+    "action": "DROPPED",
+    "ctype": "code_listing",
+    "size": "M",
+    "chars": 762
+  },
+  {
+    "entry_id": "chatcmpl-45a74044832e88e10da4d55cbf17b864_t5__s27",
+    "label": "L2-small-kept-code",
+    "level": "L2",
+    "action": "KEPT",
+    "ctype": "code_listing",
+    "size": "S",
+    "chars": 429
+  },
+  {
+    "entry_id": "chatcmpl-83a2c711f0f2fe81f057d869f970e6e9_t5__s23",
+    "label": "L2-XL-docstring",
+    "level": "L2",
+    "action": "KEPT",
+    "ctype": "code_with_docstring",
+    "size": "XL",
+    "chars": 8606
+  },
+  {
+    "entry_id": "chatcmpl-7d0f860cf8e98a5070431f5c4ccdc99c_t7__s29",
+    "label": "L2-kept-docstring",
+    "level": "L2",
+    "action": "KEPT",
+    "ctype": "code_with_docstring",
+    "size": "L",
+    "chars": 2406
+  },
+  {
+    "entry_id": "chatcmpl-bd7f3a6750f31a2292839f401ddd81c0_t5__s33",
+    "label": "L2-code-kept",
+    "level": "L2",
+    "action": "KEPT",
+    "ctype": "code_listing",
+    "size": "M",
+    "chars": 639
+  },
+  {
+    "entry_id": "chatcmpl-dade1820cca33eeacdbd9b8027980801_t3__s21",
+    "label": "L2-dropped-code",
+    "level": "L2",
+    "action": "DROPPED",
+    "ctype": "code_with_docstring",
+    "size": "M",
+    "chars": 1280
+  },
+  {
+    "entry_id": "chatcmpl-d18bf257fa18c9da5d65fe60213b071b_t7__s87",
+    "label": "L2-dropped-dispatcher",
+    "level": "L2",
+    "action": "DROPPED",
+    "ctype": "code_listing",
+    "size": "L",
+    "chars": 2938
+  },
+  {
+    "entry_id": "chatcmpl-50f8139bb782bb1803d3f4e674ddb393_t7__s5",
+    "label": "L3-kept-tests",
+    "level": "L3",
+    "action": "KEPT",
+    "ctype": "code_with_docstring",
+    "size": "L",
+    "chars": 2732
+  },
+  {
+    "entry_id": "chatcmpl-50f8139bb782bb1803d3f4e674ddb393_t7__s25",
+    "label": "L3-kept-impl",
+    "level": "L3",
+    "action": "KEPT",
+    "ctype": "code_with_docstring",
+    "size": "L",
+    "chars": 1961
+  },
+  {
+    "entry_id": "chatcmpl-c9824a022fe87598d9d265c5a2d65421_t6__s9",
+    "label": "L3-kept-setup",
+    "level": "L3",
+    "action": "KEPT",
+    "ctype": "code_listing",
+    "size": "M",
+    "chars": 1077
+  },
+  {
+    "entry_id": "chatcmpl-1354c7478cb3e6d7fa0f4149ae60bde4_t6__s41",
+    "label": "L2-dropped-helper",
+    "level": "L2",
+    "action": "DROPPED",
+    "ctype": "code_listing",
+    "size": "M",
+    "chars": 1179
+  },
+  {
+    "entry_id": "chatcmpl-2b46e6745c971de54d4e9b69ffb2031a_t7__s15",
+    "label": "L3-dropped-runner",
+    "level": "L3",
+    "action": "DROPPED",
+    "ctype": "code_listing",
+    "size": "M",
+    "chars": 1792
+  },
+  {
+    "entry_id": "chatcmpl-388ac2b308284112c6f96d1b91a81f14_t7__s19",
+    "label": "L3-dropped-build",
+    "level": "L3",
+    "action": "DROPPED",
+    "ctype": "code_listing",
+    "size": "L",
+    "chars": 3261
+  }
+]

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>GT Review — File Read Compression</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, "Segoe UI", sans-serif;
+    background: #1e1e1e; color: #d4d4d4;
+    height: 100vh; display: flex; flex-direction: column;
+  }
+  .topbar {
+    padding: 8px 14px; background: #252526; border-bottom: 1px solid #333;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .topbar button {
+    padding: 5px 12px; background: #0e639c; color: #fff; border: 0;
+    border-radius: 3px; cursor: pointer; font-size: 12px;
+  }
+  .topbar button:hover { background: #1177bb; }
+  .topbar button:disabled { background: #3a3a3a; cursor: not-allowed; }
+  .topbar button.secondary { background: #3a3a3a; }
+  .topbar button.secondary:hover { background: #4a4a4a; }
+  .meta { font-size: 12px; color: #9cdcfe; }
+  .progress { margin-left: auto; font-size: 12px; color: #ce9178; }
+
+  .intent {
+    padding: 8px 14px; background: #252526; border-bottom: 1px solid #333;
+    max-height: 100px; overflow: auto; font-size: 12px;
+    white-space: pre-wrap; line-height: 1.4;
+  }
+  .intent .label {
+    color: #9cdcfe; font-weight: 600; margin-bottom: 3px; font-size: 11px;
+  }
+
+  .panes { flex: 1; display: flex; min-height: 0; }
+  .pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .pane.left, .pane.middle { border-right: 1px solid #333; }
+  .pane h3 {
+    margin: 0; padding: 6px 12px; background: #2d2d30;
+    border-bottom: 1px solid #333; font-size: 11px; font-weight: 600;
+    color: #9cdcfe; display: flex; justify-content: space-between; align-items: center;
+  }
+  .pane h3 .stats { color: #6a9955; font-weight: 400; font-size: 10px; }
+  .content {
+    flex: 1; overflow: auto; padding: 10px 12px;
+    font-family: Consolas, Menlo, monospace; font-size: 11px;
+    white-space: pre-wrap; line-height: 1.5;
+    word-break: break-word;
+  }
+  .dropped {
+    color: #f48771; font-style: italic;
+    padding: 16px; text-align: center;
+    border: 1px dashed #f48771; border-radius: 4px; margin: 16px;
+  }
+
+  /* GT editor */
+  .pane.gt h3 { background: #3a2d2d; color: #ec9eb4; }
+  .gt-editor {
+    flex: 1; overflow: auto; padding: 0;
+    display: flex; flex-direction: column;
+  }
+  .gt-editor textarea {
+    flex: 1; width: 100%; padding: 10px 12px;
+    background: #1e1e1e; color: #ec9eb4; border: 0;
+    font-family: Consolas, Menlo, monospace; font-size: 11px;
+    line-height: 1.5; resize: none; outline: none;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .gt-editor textarea:focus { background: #2a1e1e; }
+  .gt-editor textarea.dropped-mode {
+    color: #6a6a6a; background: #2a2a2a;
+  }
+
+  .bottombar {
+    padding: 8px 14px; background: #252526; border-top: 1px solid #333;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .row .label {
+    font-size: 11px; color: #9cdcfe; font-weight: 600;
+    min-width: 90px;
+  }
+
+  .scorebtn {
+    width: 38px; height: 28px; border: 1px solid #555;
+    background: #2d2d30; color: #d4d4d4;
+    border-radius: 3px; cursor: pointer; font-size: 11px;
+  }
+  .scorebtn:hover { background: #3e3e42; }
+  .scorebtn.active {
+    background: #0e639c; border-color: #0e639c;
+    color: #fff; font-weight: 600;
+  }
+
+  .actionbtn {
+    padding: 4px 14px; border: 1px solid #555;
+    background: #2d2d30; color: #d4d4d4;
+    border-radius: 3px; cursor: pointer; font-size: 11px;
+  }
+  .actionbtn.active.compress { background: #16825d; border-color: #16825d; color: #fff; }
+  .actionbtn.active.drop { background: #a1260d; border-color: #a1260d; color: #fff; }
+
+  .rationale {
+    width: 100%; padding: 6px 10px;
+    background: #1e1e1e; color: #dcdcaa; border: 1px solid #3a3a3a;
+    font-family: Consolas, Menlo, monospace; font-size: 11px;
+    line-height: 1.4; resize: vertical; min-height: 40px; max-height: 100px;
+    outline: none; border-radius: 3px;
+  }
+  .rationale:focus { border-color: #0e639c; }
+
+  .current-score { font-size: 11px; color: #ce9178; font-weight: 600; }
+  .save-status {
+    font-size: 10px; color: #6a9955; margin-left: auto;
+  }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <button id="prev">◀ Prev</button>
+    <button id="next">Next ▶</button>
+    <button id="next-unapproved" class="secondary">Next Unapproved ⏭</button>
+    <button id="pick" class="secondary">Open file…</button>
+    <span class="meta" id="meta"></span>
+    <span class="progress" id="progress"></span>
+  </div>
+
+  <div class="intent">
+    <div class="label">USER INTENT</div>
+    <div id="intent"></div>
+  </div>
+
+  <div class="panes">
+    <div class="pane left">
+      <h3>
+        <span>ORIGINAL — file_read source</span>
+        <span class="stats" id="orig-stats"></span>
+      </h3>
+      <div class="content" id="original"></div>
+    </div>
+    <div class="pane middle">
+      <h3>
+        <span>V5 — new system_prompt output</span>
+        <span class="stats" id="teacher-stats"></span>
+      </h3>
+      <div class="content" id="compressed"></div>
+    </div>
+    <div class="pane gt">
+      <h3>
+        <span>GT — hand-authored (editable)</span>
+        <span class="stats" id="gt-stats"></span>
+      </h3>
+      <div class="gt-editor">
+        <textarea id="gt-text" spellcheck="false"
+                  placeholder="Edit GT compression here. Auto-saves on blur."></textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="bottombar">
+    <div class="row">
+      <span class="label">GT Action</span>
+      <button class="actionbtn compress" data-act="compress" id="act-compress">compress</button>
+      <button class="actionbtn drop" data-act="drop" id="act-drop">drop</button>
+      <span style="margin-left:16px;" class="label">Rationale</span>
+    </div>
+    <div class="row">
+      <textarea class="rationale" id="rationale"
+                placeholder="Why this GT is correct…"></textarea>
+    </div>
+    <div class="row">
+      <span class="label">Approved</span>
+      <div id="scorebtns" style="display:flex; gap:4px;"></div>
+      <button id="clear" class="actionbtn" style="margin-left:6px;">Clear</button>
+      <span class="current-score" id="curscore"></span>
+      <span class="save-status" id="save-status"></span>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

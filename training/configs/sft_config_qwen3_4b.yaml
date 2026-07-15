@@ -1,0 +1,74 @@
+# Stage 1: SFT Training Config — Qwen3-4B-Instruct-2507 backbone
+# Sister of sft_config_coder3b.yaml and sft_config_coder7b.yaml. Same training script:
+#   python training/train_sft_instruct.py --config training/configs/sft_config_qwen3_4b.yaml
+model:
+  name: Qwen/Qwen3-4B-Instruct-2507
+  max_seq_length: 16384
+  load_in_4bit: false
+  dtype: bfloat16
+
+lora:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  output_dir: ./training/models/sft-qwen3-4b
+  num_train_epochs: 2
+  per_device_train_batch_size: 2   # Without unsloth memory opts, bs=4+ risks OOM in
+                                   # F.cross_entropy at 16K seq + Qwen 152k vocab (needs 17GB
+                                   # per shift_logits + softmax chunks). bs=2 = safe margin
+                                   # even on 96GB. Math identical to bs=8/accum=4 (eff batch 32).
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16  # 2 × 16 = effective bs 32 (unchanged)
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler_type: linear
+  optim: adamw_8bit
+  bf16: true
+  logging_steps: 10
+  save_strategy: steps
+  save_steps: 200
+  eval_strategy: steps
+  eval_steps: 200
+  gradient_checkpointing: true
+  early_stopping_patience: 3
+  seed: 42
+  report_to: none
+
+data:
+  # Per-segment teacher distillations from update/.
+  # Each source: path = teacher JSONL, system_prompt_path = matching teacher prompt,
+  # default_kind = used only when records lack a `kind` field.
+  #
+  # `drop_loss_weight`: per-sample loss scale for dropped SEG samples.
+  # Set to 1 (baseline) — prior weight=20 catastrophically over-dropped across all ckpts
+  # (DropAcc 42-47%, all < always-keep baseline 59%). Even 4B has trouble at high
+  # weight. SFT stage now targets a "GRPO-ready" drop starting point (~46% DropAcc,
+  # ~22% DropR from 4B-2814 baseline), with drop policy fine-tuning left to DPO/GRPO.
+  dropped_repeat: 1
+  drop_loss_weight: 1
+  train:
+    - path: update/file_read_compressed_all10k_merged_20260625.jsonl
+      # Qwen3 variant prepends "/no_think\n\n" — Qwen3 defaults to emitting
+      # <think></think> blocks even in Instruct-2507 which breaks Fmt%.
+      # Training + inference use the same prefix → model learns to suppress.
+      system_prompt_path: update/system_prompt_qwen3.txt
+      default_kind: file_read           # file_read records carry no `kind` field
+    - path: update/other_compressed_all_per_kind.jsonl
+      system_prompt_path: update/system_prompt_other_qwen3.txt
+      # no default_kind: every record sets `kind` (log_output, bash_command, …)
+  eval: []                              # add held-out source(s) here to enable eval/early-stop
+  # train_max_tokens / eval_max_tokens default to model.max_seq_length;
+  # uncomment to override (drops samples longer than the cap).
+  # train_max_tokens: 16384
+  # eval_max_tokens: 8192
