@@ -295,7 +295,7 @@ If you find this work useful, please cite:
   title        = {Paritok: Fine-tuned Compression for AI Coding-Agent Context},
   year         = {2026},
   publisher    = {GitHub},
-  howpublished = {\url{https://github.com/paritok-official/paritok-4b-v1}},
+  howpublished = {\url{https://github.com/Paritok-official/paritok-4b-v1}},
 }
 ```
 
@@ -323,6 +323,6 @@ The base model, Qwen3-4B-Instruct-2507, is released under its own license. Pleas
 
 ## 💬 Community & Support
 
-- 🐛 **Bug reports & feature requests** → [GitHub Issues](https://github.com/paritok-official/paritok-4b-v1/issues)
+- 🐛 **Bug reports & feature requests** → [GitHub Issues](https://github.com/Paritok-official/paritok-4b-v1/issues)
 - 💭 **Discussion** → [🤗 HF Model discussions](https://huggingface.co/paritok/paritok-4b-v1/discussions)
 - 📧 **Contact** → [paritok9@gmail.com](mailto:paritok9@gmail.com)
