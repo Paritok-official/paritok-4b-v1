@@ -60,6 +60,10 @@ training/configs/dpo_config_*
 # ── Eval(内部代理指标,与 README 的 SWE-bench 数字不同体系,不上 GitHub)──
 eval/
 
+# ── 本地备份文件(HF model card 替换前的原始版本等)──
+*.trl-autogen-backup
+*.backup
+
 # ── 环境变量 ──
 .env
 *.env
