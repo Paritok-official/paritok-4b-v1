@@ -117,60 +117,164 @@ Paritok is the only entry trained end-to-end on real coding-agent trajectories �
 
 ## 🚀 Quick Start
 
-### Install
+Paritok runs as a **middle layer between your agent and the LLM API**. It intercepts each request, compresses the context, and forwards it upstream — your agent doesn't change, it just points at Paritok.
+
+```
+Your Agent (Claude Code / Cursor / Codex)
+  → builds request (tool results + history + tool schemas)
+     ★ Paritok middleware compresses here ★
+  → forwarded to Anthropic / OpenAI  (billed on the compressed tokens)
+  ← response flows back unchanged; compressed refs expand on demand
+```
+
+### Fastest path (self-host, no clone needed)
+
+Everything ships in the PyPI package — you do **not** need to `git clone` the repo. In a fresh environment (with [Ollama](https://ollama.com/download) installed):
 
 ```bash
-pip install "torch>=2.4" "transformers>=4.44" "peft>=0.12" accelerate
+pip install "paritok[proxy]"     # the middleware + CLI
+paritok up                       # pulls the model if missing, then starts the proxy
 ```
 
-### Load model & adapter
+`paritok up` is the pip-only, no-clone equivalent of a setup script: it checks Ollama, `ollama pull`s `paritok/paritok-4b-v1` and tags it as the local `paritok-4b-v1` if it isn't already there (~2.5GB, first run only), then serves on port 8080.
+
+> **Leave that terminal running.** The proxy is a foreground server — every agent request flows through it, so it must stay up for the whole session. Closing the terminal (or Ctrl-C) stops compression. Open a **separate** terminal for the next step.
+
+In the shell that launches your agent ([step 4](#4-point-your-agent-at-it)):
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8080   # then start Claude Code / Cursor / …
+```
+
+No config file is needed — `paritok up` and `paritok proxy` run on built-in defaults. Run `paritok init` to drop a starter `paritok.yaml` only if you want to tweak settings. (Cloned the repo? `./deploy.sh` does the same pull + start.)
+
+**q4 vs full precision.** `paritok up` uses the q4 model (`:latest`, ~2.5GB) by default. For full precision, run `paritok up --registry-model paritok/paritok-4b-v1:f16` (~8GB). If you already `ollama pull`ed either variant yourself, `up` **auto-detects** which one you have and uses it — no re-download. Prefer to run each step by hand? They're below.
+
+### 1. Install
+
+```bash
+pip install "paritok[proxy]"
+# or, from a clone of this repo:
+pip install -e ".[proxy]"
+```
+
+### 2. Pick a backend — self-host **or** the GPU server
+
+One boolean in [`paritok.yaml`](paritok.yaml) decides where compression runs:
+
+```yaml
+use_gpu_server: false   # ← the only switch that matters
+```
+
+**Option A — self-host** (`false`, default). Run the open 4B model on your own machine. No key, nothing leaves your box. Simplest is **Ollama**:
+
+```bash
+ollama pull paritok/paritok-4b-v1               # one-time, ~2.5GB
+ollama cp   paritok/paritok-4b-v1 paritok-4b-v1  # tag it as the runtime name
+```
+
+The registry (pull) name is namespaced; the second line tags it as the bare `paritok-4b-v1` the config uses. Default [`paritok.yaml`](paritok.yaml) already points `local_model` at Ollama (`http://localhost:11434/v1`, `model: paritok-4b-v1`) — nothing else to set. (`./deploy.sh` does both steps for you.)
+
+> Want full precision? Pull `paritok/paritok-4b-v1:f16` instead (~8GB, needs more RAM/VRAM). The default `:latest` is q4_K_M (~2.5GB) — the quantization the runtime is validated against.
+
+<details>
+<summary><b>Alternative: vLLM</b> (serves the HF LoRA adapter directly, no GGUF)</summary>
+
+The Hugging Face weights ([`paritok/paritok-4b-v1`](https://huggingface.co/paritok/paritok-4b-v1)) are a **LoRA adapter** over `Qwen/Qwen3-4B-Instruct-2507`. vLLM can serve it as an OpenAI-compatible endpoint on a 24GB GPU:
+
+```bash
+pip install vllm
+vllm serve Qwen/Qwen3-4B-Instruct-2507 \
+  --enable-lora \
+  --lora-modules paritok-4b-v1=paritok/paritok-4b-v1 \
+  --max-lora-rank 32 \
+  --port 8000
+```
+
+Then in `paritok.yaml`, set `local_model.base_url: http://localhost:8000/v1` (keep `model: paritok-4b-v1`, the `--lora-modules` name).
+</details>
+
+> Whatever you name the served model, make `local_model.model` match it (or override once with `PARITOK_MODEL=<name>`).
+
+**Option B — Paritok GPU server** (`true`). No GPU required. Create an API key at **[paritok.com](https://paritok.com) → dashboard → API keys**, then:
+
+```yaml
+use_gpu_server: true
+gpu_server:
+  api_key: "pk_live_..."   # or: export PARITOK_API_KEY=pk_live_...
+```
+
+### 3. Start the proxy
+
+```bash
+paritok proxy --port 8080 --config-file paritok.yaml
+```
+
+**Keep this terminal open** — the proxy must stay running for the whole session; run your agent from a separate terminal. On startup it checks the backend and warns (never aborts) if it can't reach one — e.g. the Ollama model isn't pulled, or the hosted server isn't reachable.
+
+### 4. Point your agent at it
+
+Set the base URL in the shell that launches your agent, **then start the agent**:
+
+```bash
+# macOS / Linux
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8080   # Claude Code
+export OPENAI_BASE_URL=http://127.0.0.1:8080      # Codex / OpenAI-style agents
+```
+
+```powershell
+# Windows PowerShell
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8080"
+$env:OPENAI_BASE_URL    = "http://127.0.0.1:8080"
+```
+
+Keep your real provider API key set as usual (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) — the proxy only rewrites the request body and forwards your headers upstream. That's it: Claude Code, Cursor, Codex — any agent that honors `BASE_URL` — now routes through Paritok. Compressed prompts go upstream; original responses come back unchanged.
+
+### 5. Check it's working
+
+The proxy exposes two endpoints:
+
+```bash
+curl http://127.0.0.1:8080/health   # {"status":"ok","version":"..."}
+curl http://127.0.0.1:8080/stats    # live compression totals
+```
+
+`/stats` reports cumulative savings across the session:
+
+```json
+{
+  "requests_processed": 42,
+  "total_original_tokens": 512340,
+  "total_compressed_tokens": 138221,
+  "total_saved_tokens": 374119,
+  "saved_percent": 73.0,
+  "avg_saved_tokens_per_request": 8907.6,
+  "items_compressed": 128,
+  "total_tools_filtered": 61,
+  "uptime_seconds": 613.2
+}
+```
+
+`saved_percent` is the share of compressible tokens removed — expect **~74%** on typical coding-agent traffic.
+
+### SDK mode (alternative)
+
+Prefer to wrap your client directly in Python?
 
 ```python
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
+import anthropic
+import paritok
 
-base = AutoModelForCausalLM.from_pretrained(
-    "Qwen/Qwen3-4B-Instruct-2507",
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
+client = paritok.ParitokClient(anthropic.Anthropic())
+resp = client.messages.create(
+    model="claude-sonnet-4-20250514", max_tokens=4096, messages=[...]
 )
-model = PeftModel.from_pretrained(base, "paritok/paritok-4b-v1")
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B-Instruct-2507")
-model.eval()
+print(resp._paritok_savings.saved_tokens, resp._paritok_savings.ratio)
 ```
 
-### Compress one segment
+### Just the raw model?
 
-```python
-system_prompt = open("data_pipeline/prompts/system_prompt_qwen3.txt").read()
-
-original_code = """\
-def compute_score(items):
-    total = 0
-    for it in items:
-        total += it.get('score', 0)
-    return total / max(len(items), 1)
-"""
-
-user_msg = (
-    f"[SEG id=1 kind=file_read "
-    f"user_intent=\"Understand what compute_score does\"]\n"
-    f"{original_code}\n"
-    f"[/SEG]"
-)
-
-prompt = tokenizer.apply_chat_template(
-    [{"role": "system", "content": system_prompt},
-     {"role": "user",   "content": user_msg}],
-    tokenize=False, add_generation_prompt=True,
-)
-inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-out = model.generate(**inputs, max_new_tokens=1024, do_sample=False)
-print(tokenizer.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True))
-```
-
-Full runnable example: [`examples/inference/basic.py`](examples/inference/basic.py).
+To load the LoRA adapter and compress a single `[SEG]` block yourself (no middleware), see [`examples/inference/basic.py`](examples/inference/basic.py).
 
 ---
 
@@ -187,16 +291,25 @@ Full runnable example: [`examples/inference/basic.py`](examples/inference/basic.
 - You need lossless compression (in that case, just don't compress).
 - Your workflow is single-turn Q&A (context doesn't accumulate).
 
-### Middle-layer API proxy pattern
+### How the middleware works
 
-The most natural deployment is as a middle-layer proxy that sits between your agent and the upstream LLM API:
+The [`paritok/`](paritok/) package is the middle layer. On every request the engine ([`paritok/middleware/wrapper.py`](paritok/middleware/wrapper.py)) runs four steps before forwarding upstream:
+
+1. **Tool discovery** — 70+ tool schemas → top-K kept in full, the rest stubbed ([`pipelines/tool_discovery.py`](paritok/pipelines/tool_discovery.py)).
+2. **Compress tool outputs** — each `tool_result` is compressed by the 4B model ([`pipelines/compress.py`](paritok/pipelines/compress.py)).
+3. **Compress old history** — turns beyond the recent window are summarized once the context fills up.
+4. **Inject virtual tools** — `expand_context` and `gateway_search_tools` ([`pipelines/virtual.py`](paritok/pipelines/virtual.py)) let the model pull back anything it needs.
+
+**Never destructive.** Compressed content is tagged `[REF:id]`; if the LLM needs the original it calls the `expand_context` virtual tool and the middleware returns the full text locally. `gateway_search_tools` recovers any tool schema that discovery stubbed out.
+
+Deploy it either way — the same package powers both:
 
 ```
-Your Agent  ──►  Paritok proxy  ──►  Anthropic / OpenAI
-   (raw)          (compressed)         (billed on compressed)
+Your Agent  ──►  Paritok middleware  ──►  Anthropic / OpenAI
+   (raw)          (self-host or GPU server)   (billed on compressed)
 ```
 
-Compressed prompts flow upstream; original responses flow back unchanged. See [`examples/proxy/`](examples/proxy/) for a minimal reference implementation.
+Configure everything in [`paritok.yaml`](paritok.yaml); flip `use_gpu_server` to move between your own hardware and our hosted GPU endpoint without touching your agent.
 
 ---
 
@@ -265,7 +378,7 @@ Paritok-4B-v1 is our first release. What's next:
 - 🎯 **Paritok-4B-v2.** Next-generation training pipeline pushing compression to **under 20%** while closing the gap to uncompressed solve rate. Target: **up to +15pp identifier retention** at even tighter compression.
 - 📈 **Frontier-scale backbones.** Larger models (10B+ parameters) for multi-day Claude Code / Cursor sessions with **100K+ token histories** and heavy multi-file workflows.
 - 🌍 **Multi-language expansion.** First-class support for TypeScript, Rust, Go, Java, C++, Kotlin — v1 is Python-heavy but the architecture is language-agnostic.
-- 🔌 **Native integrations.** Drop-in `mcp add paritok` plugin for Claude Code and Cursor, plus a hosted inference endpoint for teams that don't want to self-host.
+- 🔌 **Native integrations.** Drop-in `mcp add paritok` plugin for Claude Code and Cursor. (Or route to the hosted GPU endpoint with `use_gpu_server: true`.)
 - ⚙️ **Adaptive compression.** Per-segment auto-selection of compression aggressiveness based on age, kind, and downstream intent — no manual tuning, no level knobs.
 
 Follow the [🤗 model discussions](https://huggingface.co/paritok/paritok-4b-v1/discussions) or star the repo for release notifications.

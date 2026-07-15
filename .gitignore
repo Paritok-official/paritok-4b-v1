@@ -67,6 +67,7 @@ tmp/
 !docs/*.md
 pyproject.toml
 compress_trace.jsonl
+paritok.yaml
 
 # ── Large model files uploaded to HF Hub (GitHub 100MB limit; keep only adapter_config.json) ──
 training/models/checkpoint-2000/adapter_model.safetensors
