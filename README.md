@@ -1,11 +1,7 @@
-<p align="center">
-  <img src="figures/logo.png" width="360" alt="Paritok"/>
-</p>
-
 <h1 align="center">Paritok</h1>
 
 <p align="center"><b>The first open-source compression model trained specifically for coding agents.</b></p>
-<p align="center">Trained on <b>45K real coding-agent trajectories</b>, Paritok understands the difference between a function signature and a debug line — so it keeps what matters and drops what doesn't. Fully compatible with <b>Claude Code, Cursor, OpenHands</b>, and any agent framework using standard message format.<br/><br/>The result: up to <b>74% fewer tokens on typical workloads</b> (up to <b>95%</b> on heavy long-session traffic), up to <b>95% off your input bill</b> on Claude / GPT — while <b>matching gpt-4.1-mini</b> on SWE-bench Verified at a fraction of the cost.</p>
+<p align="center">Trained on <b>45K real coding-agent trajectories</b>, Paritok understands the difference between a function signature and a debug line — so it keeps what matters and drops what doesn't. Fully compatible with <b>Claude Code, Cursor, OpenHands</b>, and any agent framework using standard message format.<br/><br/><b>~74% fewer tokens on typical workloads</b> (up to <b>95%</b> on heavy long-session traffic), cutting your input token bill by <b>up to 95%</b> on Claude / GPT — while <b>matching gpt-4.1-mini</b> on SWE-bench Verified at a fraction of the cost.</p>
 
 <p align="center">
   <a href="https://huggingface.co/paritok/paritok-4b-v1">
@@ -285,7 +281,7 @@ Paritok is built by two engineers — no big lab, no external funding, just mont
 
 We ship on our own budget and share every result transparently. Paritok-4B-v1 is our first release; v2 is in training.
 
-Reach us: [hello@paritok.ai](mailto:hello@paritok.ai) · X [@paritok](https://x.com/paritok)
+Reach us: [paritok9@gmail.com](mailto:paritok9@gmail.com) · X [@paritok](https://x.com/paritok)
 
 ---
 
@@ -329,10 +325,4 @@ The base model, Qwen3-4B-Instruct-2507, is released under its own license. Pleas
 
 - 🐛 **Bug reports & feature requests** → [GitHub Issues](https://github.com/Paritok2026/paritok-4b-v1/issues)
 - 💭 **Discussion** → [🤗 HF Model discussions](https://huggingface.co/paritok/paritok-4b-v1/discussions)
-- 📧 **Contact** → [hello@paritok.ai](mailto:hello@paritok.ai)
-
----
-
-<p align="center">
-  Built on <a href="https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507">Qwen3-4B-Instruct-2507</a>
-</p>
+- 📧 **Contact** → [paritok9@gmail.com](mailto:paritok9@gmail.com)
