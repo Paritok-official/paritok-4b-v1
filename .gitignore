@@ -24,27 +24,17 @@ Thumbs.db
 *.swp
 *~
 
-# ── 训练数据(GitHub 不放,用户 regenerate)──
-# data_pipeline/ 内部的任何 jsonl 都当训练数据
+# ── Training data (not committed to GitHub; users regenerate) ──
+# Any jsonl inside data_pipeline/ is treated as training data
 data_pipeline/*.jsonl
 data_pipeline/**/*.jsonl
-# 老 update/ 目录本地保留(内容都 mv 走了,还剩训练数据 jsonl)
+# Old update/ dir kept locally (contents were moved out; only training-data jsonl remains)
 update/
 
-# ── 训练输出 ──
-training/models/checkpoint-2000/optimizer.pt
-training/models/checkpoint-2000/rng_state.pth
-training/models/checkpoint-2000/scheduler.pt
-training/models/checkpoint-2000/trainer_state.json
-training/models/checkpoint-2000/training_args.bin
-training/models/checkpoint-2000-merged/
-training/models/grpo-qwen3-4b/
-training/models/grpo-qwen3-4b-*/
-training/models/sft-qwen3-4b/
-training/models/*.zip
-training/models/*.log
+# ── Training outputs ──
+training/models/
 
-# ── GRPO / DPO / 3B / 7B(本地保留,不上 GitHub)──
+# ── GRPO / DPO / 3B / 7B (kept locally, not on GitHub) ──
 training/train_grpo.py
 training/reward.py
 training/configs/grpo_config.yaml
@@ -56,24 +46,29 @@ training/configs/sft_config_coder3b.yaml
 training/configs/sft_config_coder7b.yaml
 training/train_dpo.py
 training/configs/dpo_config_*
+training/models/*.log
+training/data/
+training/scripts/
 
-# ── Eval(内部代理指标,与 README 的 SWE-bench 数字不同体系,不上 GitHub)──
+# ── Eval (internal proxy metrics; a different basis from the README SWE-bench numbers, not on GitHub) ──
 eval/
 
-# ── 环境变量 ──
+# ── Environment variables ──
 .env
 *.env
 !.env.example
 
-# ── 临时 / scratch ──
+# ── Temp / scratch ──
 tool-results/
 scratchpad/
 tmp/
 *.log
 !README*.md
 !docs/*.md
+pyproject.toml
+compress_trace.jsonl
 
-# ── HF Hub 上传的大模型文件(GitHub 100MB 限制,只保留 adapter_config.json)──
+# ── Large model files uploaded to HF Hub (GitHub 100MB limit; keep only adapter_config.json) ──
 training/models/checkpoint-2000/adapter_model.safetensors
 training/models/checkpoint-2000/added_tokens.json
 training/models/checkpoint-2000/chat_template.jinja
