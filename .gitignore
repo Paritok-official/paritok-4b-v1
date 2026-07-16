@@ -53,6 +53,10 @@ training/scripts/
 # ── Eval (internal proxy metrics; a different basis from the README SWE-bench numbers, not on GitHub) ──
 eval/
 
+# ── Backup files ──
+*.trl-autogen-backup
+*.backup
+
 # ── Environment variables ──
 .env
 *.env
