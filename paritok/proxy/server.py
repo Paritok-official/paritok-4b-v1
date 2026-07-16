@@ -194,7 +194,7 @@ def create_app(
         return JSONResponse(proxy_stats.snapshot())
 
     async def handle_health(request: Request) -> JSONResponse:
-        return JSONResponse({"status": "ok", "version": "0.3.0"})
+        return JSONResponse({"status": "ok", "version": "1.0.0"})
 
     # ── Helpers ──
 

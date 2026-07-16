@@ -69,7 +69,6 @@ tmp/
 *.log
 !README*.md
 !docs/*.md
-pyproject.toml
 compress_trace.jsonl
 paritok.yaml
 

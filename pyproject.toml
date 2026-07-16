@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paritok"
+version = "1.0.0"
+description = "Open-source context compression for AI coding agents. A middle layer between your agent and the LLM API — self-host the 4B model or use the Paritok GPU server."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "Paritok Team" }]
+keywords = ["llm", "context", "compression", "coding-agent", "proxy", "token", "optimization", "ollama"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "tiktoken>=0.7.0",
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+proxy = ["uvicorn>=0.30.0", "starlette>=0.38.0"]
+
+[project.urls]
+Homepage = "https://paritok.com"
+Repository = "https://github.com/paritok-official/paritok-4b-v1"
+Model = "https://huggingface.co/paritok/paritok-4b-v1"
+
+[project.scripts]
+paritok = "paritok.cli:main"
+
+[tool.hatch.build.targets.wheel]
+# Ship the whole package, including the verbatim training system-prompt data
+# files under paritok/strategies/system_prompts/*.txt (loaded at runtime).
+packages = ["paritok"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# data_pipeline/ is one-off research/data tooling (its .jsonl output is
+# gitignored and regenerable), so a few stylistic rules are relaxed there
+# rather than churning throwaway code. The shipped paritok/ package stays strict.
+"data_pipeline/**" = [
+    "E741",  # ambiguous variable name (l/I/O) — fine in short analysis loops
+    "E731",  # lambda assignment
+    "E702",  # multiple statements on one line (semicolon)
+    "F841",  # unused local (kept for readability in inspection scripts)
+]
