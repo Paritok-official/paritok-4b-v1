@@ -394,7 +394,7 @@ Paritok is built by two engineers — no big lab, no external funding, just mont
 
 We ship on our own budget and share every result transparently. Paritok-4B-v1 is our first release; v2 is in training.
 
-Reach us: [paritok9@gmail.com](mailto:paritok9@gmail.com) · X [@paritok](https://x.com/paritok)
+Reach us: [paritok9@gmail.com](mailto:paritok9@gmail.com) · X [@Paritok](https://x.com/Paritok)
 
 ---
 
