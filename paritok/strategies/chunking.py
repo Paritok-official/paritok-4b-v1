@@ -24,7 +24,12 @@ CHUNK_SIZE = 3000
 CHUNK_OVERLAP = 0
 MAX_SINGLE_BLOCK = 3000
 
-_TOP_LEVEL_DEF = re.compile(r"^(class |def )\w+", re.MULTILINE)
+# Match a top-level `class`/`def`, tolerating a leading Read-tool line-number
+# prefix (cat -n style: "   43\t"). The optional group matches zero-width on
+# clean code, so benchmark reproduction (clean input) is unchanged; it only adds
+# boundary detection for the line-numbered input the proxy actually receives —
+# without it, numbered files find 0 boundaries and never chunk (any size = 1 SEG).
+_TOP_LEVEL_DEF = re.compile(r"^(?:\s*\d+\t)?(class |def )\w+", re.MULTILINE)
 _DEF_NAME = re.compile(r"^(class\s+\w+|def\s+\w+)")
 _HEADER_OR_DEF = re.compile(r"^(class\s|def\s|# Lines \d)")
 

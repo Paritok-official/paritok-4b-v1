@@ -186,7 +186,7 @@ class LocalModelStrategy:
             f"USER INTENT:\n{intent}\n\n"
             "Compress the following segment under the rules in your system prompt. "
             "Output only the compressed [SEG]...[/SEG] block (or an empty one to drop):\n\n"
-            f"[SEG id={seg_id} kind={kind} level={level}]\n{content}\n[/SEG]"
+            f"[SEG id={seg_id} kind={kind} level={level}]\n{content}\n[/SEG]\n"
         )
 
         # The compressed body is always < input; cap generation just above input
