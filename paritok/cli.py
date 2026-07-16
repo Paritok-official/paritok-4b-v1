@@ -50,10 +50,35 @@ trace:
   enabled: false
   path: compress_trace.jsonl
 
+# Codex CLI — Codex can't read OPENAI_BASE_URL, so flip this on and paritok will
+# write ~/.codex/config.toml for you (backing up any existing one). Then just run
+# `codex`. Everything lives here — no TOML to hand-edit.
+codex:
+  enabled: false           # true → auto-configure Codex to route through this proxy
+  model: gpt-5             # any model your key can call
+  api_key: ""              # your OpenAI key (embedded into the generated config.toml);
+                           # leave empty to have Codex read env OPENAI_API_KEY instead
+
 shadow_storage: memory     # "memory" | "redis"
 """
 
 _DEFAULT_CONFIG_NAME = "paritok.yaml"
+
+
+def _maybe_write_codex_config(cfg: ParitokConfig, host: str, port: int) -> None:
+    """If `codex.enabled`, write ~/.codex/config.toml so Codex routes through here."""
+    if not cfg.codex.enabled:
+        return
+    from paritok.proxy.codex_setup import write_codex_config
+    try:
+        path = write_codex_config(cfg.codex, host, port)
+    except OSError as e:  # noqa: BLE001
+        click.echo(f"Could not write Codex config ({e}). Configure ~/.codex/config.toml manually.",
+                   err=True)
+        return
+    keymode = "key from paritok.yaml" if cfg.codex.api_key else "env OPENAI_API_KEY"
+    click.echo(f"Codex: wrote {path} (model={cfg.codex.model}, {keymode}). "
+               f"Just run `codex` in another shell.")
 
 
 @click.group()
@@ -151,6 +176,10 @@ def proxy(host, port, anthropic_url, openai_url, config_file, log_level):
         config_file = _DEFAULT_CONFIG_NAME
         click.echo(f"Using {_DEFAULT_CONFIG_NAME} from the current folder.")
 
+    _maybe_write_codex_config(
+        ParitokConfig.load(config_file) if config_file else ParitokConfig.load(),
+        host, port)
+
     run_proxy(
         host=host,
         port=port,
@@ -205,6 +234,8 @@ def up(host, port, anthropic_url, openai_url, config_file, registry_model, log_l
                 "Could not prepare the local model. Fix the issue above, or "
                 "switch to the hosted backend (use_gpu_server: true)."
             )
+
+    _maybe_write_codex_config(cfg, host, port)
 
     from paritok.proxy.server import run_proxy
     run_proxy(

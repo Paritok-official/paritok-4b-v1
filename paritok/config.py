@@ -15,7 +15,7 @@ class LocalModelConfig:
     base_url: str = "http://localhost:11434/v1"  # Ollama default
     model: str = "paritok-4b-v1"  # ollama pull paritok/paritok-4b-v1 && ollama cp paritok/paritok-4b-v1 paritok-4b-v1
     temperature: float = 0.0
-    timeout: float = 30.0
+    timeout: float = 120.0
     api_key: str = ""  # optional bearer token (empty for local Ollama)
 
 
@@ -76,6 +76,27 @@ class HistoryConfig:
 
 
 @dataclass
+class CodexConfig:
+    """Auto-configure the Codex CLI to route through this proxy.
+
+    Codex ignores `OPENAI_BASE_URL` and only takes its endpoint from
+    `~/.codex/config.toml`. When `enabled`, `paritok up`/`proxy` writes that file
+    for the user (backing up any existing one) so everything lives here in
+    paritok.yaml — flip the switch, paste your key, done.
+
+    `api_key` is embedded into the generated config.toml as
+    `experimental_bearer_token`; leave it empty to fall back to Codex reading
+    `env_key` (OPENAI_API_KEY) from the environment instead. Codex custom
+    providers only support the `responses` wire protocol, so that is fixed.
+    """
+
+    enabled: bool = False
+    model: str = "gpt-5"
+    api_key: str = ""  # OpenAI key, embedded into ~/.codex/config.toml (empty → use env OPENAI_API_KEY)
+    config_path: str = ""  # override the generated config.toml location (empty → ~/.codex/config.toml)
+
+
+@dataclass
 class TraceConfig:
     """Per-compression debug trace. When enabled, every compression event
     (original + compressed body, tokens, ratio) is appended to `path` as JSONL.
@@ -97,6 +118,7 @@ class ParitokConfig:
     local_model: LocalModelConfig = field(default_factory=LocalModelConfig)
     gpu_server: GpuServerConfig = field(default_factory=GpuServerConfig)
     trace: TraceConfig = field(default_factory=TraceConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
     shadow_storage: str = "memory"  # "memory" | "redis"
 
     _VALID_SHADOW_STORAGE: ClassVar[frozenset] = frozenset({"memory", "redis"})
@@ -138,6 +160,8 @@ class ParitokConfig:
             config.gpu_server = cls._merge_dataclass(config.gpu_server, data["gpu_server"])
         if "trace" in data:
             config.trace = cls._merge_dataclass(config.trace, data["trace"])
+        if "codex" in data:
+            config.codex = cls._merge_dataclass(config.codex, data["codex"])
         if "shadow_storage" in data:
             config.shadow_storage = data["shadow_storage"]
         config.__post_init__()

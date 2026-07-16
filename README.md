@@ -219,7 +219,7 @@ Set the base URL in the shell that launches your agent, **then start the agent**
 ```bash
 # macOS / Linux
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8080   # Claude Code
-export OPENAI_BASE_URL=http://127.0.0.1:8080      # Codex / OpenAI-style agents
+export OPENAI_BASE_URL=http://127.0.0.1:8080      # Cursor / OpenAI-SDK agents
 ```
 
 ```powershell
@@ -228,7 +228,58 @@ $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8080"
 $env:OPENAI_BASE_URL    = "http://127.0.0.1:8080"
 ```
 
-Keep your real provider API key set as usual (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) — the proxy only rewrites the request body and forwards your headers upstream. That's it: Claude Code, Cursor, Codex — any agent that honors `BASE_URL` — now routes through Paritok. Compressed prompts go upstream; original responses come back unchanged.
+Keep your real provider API key set as usual (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) — the proxy only rewrites the request body and forwards your headers upstream. That's it: Claude Code, Cursor, and any agent that honors `BASE_URL` now routes through Paritok. Compressed prompts go upstream; original responses come back unchanged.
+
+> **Codex is the exception — it does *not* read `OPENAI_BASE_URL`.** The Codex CLI takes its endpoint from `~/.codex/config.toml`, not an env var, so the line above silently has no effect for it. See [Codex setup](#codex-cli) just below.
+
+#### Codex CLI
+
+Codex ignores `OPENAI_BASE_URL` — it only reads its endpoint from `~/.codex/config.toml`. So Paritok writes that file for you. Flip one switch in `paritok.yaml` and paste your key:
+
+```yaml
+codex:
+  enabled: true            # paritok writes ~/.codex/config.toml on `paritok up`
+  model: gpt-5             # any model your key can call
+  api_key: "sk-..."        # your OpenAI key (or leave "" to use env OPENAI_API_KEY)
+```
+
+Then start the proxy and run Codex — that's it:
+
+```bash
+paritok up     # writes ~/.codex/config.toml (backs up any existing one)
+codex          # in another shell — now routed through Paritok
+```
+
+Everything lives in `paritok.yaml`; the generated `config.toml` is a derived file (a `.paritok-bak` backup is kept if you already had one). Codex custom providers only speak the **`responses`** wire protocol, which the proxy serves at `/v1/responses`.
+
+<details>
+<summary>Prefer to write <code>~/.codex/config.toml</code> by hand?</summary>
+
+```toml
+model = "gpt-5"
+model_provider = "paritok"
+
+[model_providers.paritok]
+name = "paritok"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"      # your OpenAI key, read from the environment
+```
+</details>
+
+#### Using an API key instead of a subscription
+
+Signed in with a subscription (Claude Pro/Max, or ChatGPT via `codex login`)? Just launch `claude` / `codex` the way you normally do.
+
+Prefer a pay-as-you-go **API key**?
+
+- **Claude Code** — set your key and keep the base URL from step 4:
+  ```bash
+  export ANTHROPIC_API_KEY=sk-ant-...
+  export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+  claude
+  ```
+- **Codex** — put your key in the `codex:` block of `paritok.yaml` (above); nothing else to set.
 
 ### 5. Check it's working
 
