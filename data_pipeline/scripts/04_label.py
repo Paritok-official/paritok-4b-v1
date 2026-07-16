@@ -187,17 +187,17 @@ def main():
             
     pbar.close()
 
-    print(f"\n=== Label Report ===")
+    print("\n=== Label Report ===")
     print(f"Total samples:           {n_total:>8}")
     print(f"Samples with stale files:{n_with_stale:>8} ({100*n_with_stale/n_total:.1f}%)")
     total_segs = sum(level_counts.values())
-    print(f"\nLevel distribution (across all segments):")
+    print("\nLevel distribution (across all segments):")
     for lvl in ("L0", "L1", "L2", "L3"):
         c = level_counts[lvl]
         print(f"  {lvl}: {c:>10} ({100*c/total_segs:.1f}%)")
     print(f"\nTotal must_keep_spans: {total_must_keep}")
     print(f"Avg per sample:        {total_must_keep/n_total:.1f}")
-    print(f"\nMust-keep span breakdown:")
+    print("\nMust-keep span breakdown:")
     for k, c in sorted(must_keep_kind_counts.items(), key=lambda x: -x[1]):
         print(f"  {k:<20} {c:>10} ({100*c/total_must_keep:.1f}%)")
     out_size = OUT.stat().st_size / 1e9

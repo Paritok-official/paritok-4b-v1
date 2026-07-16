@@ -102,7 +102,7 @@ def main():
 
     # Per-kind availability
     by_kind_all = Counter(r["kind"] for r in records)
-    print(f"Available per kind:")
+    print("Available per kind:")
     for k, c in by_kind_all.most_common():
         print(f"  {k:<22} {c:>6}")
 
@@ -118,7 +118,7 @@ def main():
             print(f"\nERROR: these kinds have < {args.per_kind} SEGs available:")
             for k, n in short:
                 print(f"  {k}: {n}")
-            print(f"Either lower --per-kind, or filter out the short kind, or accept partial.")
+            print("Either lower --per-kind, or filter out the short kind, or accept partial.")
             sys.exit(1)
         selected = []
         for kind in sorted(by_kind_recs):
@@ -135,7 +135,7 @@ def main():
     by_kind = Counter(r["kind"] for r in selected)
     by_level = Counter(r["level"] for r in selected)
     print(f"Sampled: {len(selected)}")
-    print(f"Kind distribution:")
+    print("Kind distribution:")
     for k, c in by_kind.most_common():
         print(f"  {k:<22} {c:>5} ({100*c/len(selected):.1f}%)")
     print(f"Level distribution: {dict(sorted(by_level.items()))}")

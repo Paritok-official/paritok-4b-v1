@@ -10,7 +10,7 @@ Stubbed tools can be recovered via the gateway_search_tools virtual tool.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from paritok.config import ParitokConfig
 

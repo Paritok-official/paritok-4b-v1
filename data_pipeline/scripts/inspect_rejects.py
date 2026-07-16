@@ -41,14 +41,14 @@ def main():
     if not output_path.exists():
         sys.exit(f"Not found: {output_path}")
 
-    print(f"[inspect] Loading pool ...")
+    print("[inspect] Loading pool ...")
     pool_by_id = {}
     with open(TRAIN_FULL, "rb") as f:
         for line in tqdm(f, desc="Reading pool"):
             s = orjson.loads(line)
             pool_by_id[s["metadata"]["sample_id"]] = s
 
-    print(f"[inspect] Scanning batch output ...")
+    print("[inspect] Scanning batch output ...")
     rejects = defaultdict(list)  # reason -> list of (sample_id, sample, compressed, original_input)
 
     with open(output_path, "rb") as f:
@@ -102,11 +102,11 @@ def main():
                 f.write(f"- budget: {budget} tok\n")
                 f.write(f"- **len_ratio (comp/orig)**: {len_ratio:.3f}\n")
                 f.write(f"- **budget_ratio (comp/budget)**: {budget_ratio:.3f}\n\n")
-                f.write(f"### ORIGINAL INPUT\n\n")
+                f.write("### ORIGINAL INPUT\n\n")
                 f.write("```\n")
                 f.write(original)
                 f.write("\n```\n\n")
-                f.write(f"### COMPRESSED OUTPUT\n\n")
+                f.write("### COMPRESSED OUTPUT\n\n")
                 f.write("```\n")
                 f.write(compressed)
                 f.write("\n```\n\n")
@@ -114,7 +114,7 @@ def main():
 
     size_mb = out_path.stat().st_size / 1e6
     print(f"\nWrote: {out_path} ({size_mb:.2f} MB)")
-    print(f"Open it in your editor to scroll.")
+    print("Open it in your editor to scroll.")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ Usage (proxy mode — primary, recommended):
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from paritok.config import ParitokConfig
 from paritok.pipelines.compress import CompressionPipeline
@@ -257,7 +257,7 @@ class _MessagesProxy:
 # blocks into user turns — email, date, tool hints, etc. These are NOT the task
 # and must not be handed to the compressor as the "intent", or it compresses
 # generically (poor, high-retention) instead of toward the real task.
-import re as _re
+import re as _re  # noqa: E402 — colocated with the helper below
 
 _SYSTEM_REMINDER = _re.compile(r"<system-reminder>.*?</system-reminder>", _re.DOTALL)
 

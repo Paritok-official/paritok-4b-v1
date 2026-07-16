@@ -1,6 +1,6 @@
 """Unified data schema."""
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Literal
+from typing import Optional
 
 
 @dataclass

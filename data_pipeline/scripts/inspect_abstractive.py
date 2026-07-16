@@ -184,7 +184,7 @@ def main():
             f.write(f"- markers: {x['markers']}\n")
             f.write(f"- len_ratio: {x['len_ratio']:.2f}\n")
             if x["shrunk_details"]:
-                f.write(f"- shrunk segments examples:\n")
+                f.write("- shrunk segments examples:\n")
                 for sid, k, l, in_len, out_len in x["shrunk_details"][:3]:
                     f.write(f"  - seg {sid} kind={k} level={l}: {in_len} → {out_len} chars\n")
             f.write(f"\n<details><summary>compressed output</summary>\n\n```\n{x['compressed_text']}\n```\n\n</details>\n\n---\n\n")
@@ -205,12 +205,12 @@ def main():
     # Console summary
     print("\n=== Console summary ===")
     print(f"Samples with abstractive markers: {n_with_any_marker}/{n} ({100*n_with_any_marker/n:.0f}%)")
-    print(f"Segment-level breakdown:")
+    print("Segment-level breakdown:")
     print(f"  DROPPED  : {seg_dropped_total}/{seg_in_total} ({100*seg_dropped_total/max(1,seg_in_total):.1f}%)")
     print(f"  SHRUNK   : {seg_shrunk_total}/{seg_in_total} ({100*seg_shrunk_total/max(1,seg_in_total):.1f}%)  ← abstractive")
     print(f"  INTACT   : {seg_intact_total}/{seg_in_total} ({100*seg_intact_total/max(1,seg_in_total):.1f}%)  ← extractive")
     if total_markers:
-        print(f"Top markers:")
+        print("Top markers:")
         for pat, count in total_markers.most_common(8):
             print(f"  {pat:<25} {count}")
     else:

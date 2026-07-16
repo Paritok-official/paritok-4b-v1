@@ -10,7 +10,7 @@ Focus on segment kinds where compression opportunity is highest:
 """
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 import orjson
@@ -132,7 +132,7 @@ def main():
     with open(OUT, "w") as f:
         f.write("# Stage 0 — per-segment compression by kind (passed samples)\n\n")
         f.write(f"Samples: **{len(samples)}**\n\n")
-        f.write(f"Samples with at least one LAZY EXTRACTIVE segment: ")
+        f.write("Samples with at least one LAZY EXTRACTIVE segment: ")
         f.write(f"**{len(sample_has_lazy)} / {len(samples)} ({100*len(sample_has_lazy)/len(samples):.0f}%)**\n\n")
         f.write("Definition of LAZY: `in_len > 500 AND out_len > 200 AND ratio > 0.5 AND verbatim_run_frac > 0.5`\n\n")
 
@@ -171,7 +171,7 @@ def main():
             f.write("\n")
 
     print(f"\nWrote: {OUT}")
-    print(f"\n=== Per-kind compression behavior ===")
+    print("\n=== Per-kind compression behavior ===")
     print(f"{'kind':<25} {'n_segs':>7} {'avg_ratio':>10} {'avg_verb':>9} {'n_lazy':>7} {'%_lazy':>7}")
     for kind in kinds_sorted:
         recs = segs_by_kind[kind]

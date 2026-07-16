@@ -272,7 +272,7 @@ def load_segment_sft_dataset(
         print(f"  [cache SAVE] Saving tokenized dataset to {cache_path} (~3s)...")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         ds.save_to_disk(str(cache_path))
-        print(f"  [cache SAVE] Done. Future restarts will load this in seconds.")
+        print("  [cache SAVE] Done. Future restarts will load this in seconds.")
 
     return ds
  

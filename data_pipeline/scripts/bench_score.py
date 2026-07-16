@@ -242,17 +242,17 @@ def main():
         f.write(f"- Candidate source: `{candidate_source}`\n")
         f.write(f"- Judge: `{args.judge}`\n")
         f.write(f"- Entries: {len(scored)}\n\n")
-        f.write(f"## Aggregate\n\n")
+        f.write("## Aggregate\n\n")
         f.write(f"- **avg total**: **{avg_total:.2f} / 10**\n\n")
-        f.write(f"### By action\n")
+        f.write("### By action\n")
         for act, arr in by_action.items():
             if arr:
                 f.write(f"- `{act}`: {sum(arr)/len(arr):.2f} (n={len(arr)})\n")
-        f.write(f"\n### By level\n")
+        f.write("\n### By level\n")
         for lvl, arr in by_level.items():
             if arr:
                 f.write(f"- `{lvl}`: {sum(arr)/len(arr):.2f} (n={len(arr)})\n")
-        f.write(f"\n### By content bucket\n")
+        f.write("\n### By content bucket\n")
         for buck, arr in by_bucket.items():
             if arr:
                 f.write(f"- `{buck}`: {sum(arr)/len(arr):.2f} (n={len(arr)})\n")
@@ -271,7 +271,7 @@ def main():
 
     print(f"\nWrote: {out_md}")
     print(f"Wrote: {out_jsonl}")
-    print(f"\n=== Aggregate ===")
+    print("\n=== Aggregate ===")
     print(f"Avg total: {avg_total:.2f} / 10")
     for act, arr in by_action.items():
         if arr:

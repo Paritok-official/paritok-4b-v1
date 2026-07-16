@@ -78,7 +78,7 @@ def call(client, model: str, system_prompt: str, entry: dict) -> dict:
         kwargs["temperature"] = 0
     try:
         resp = client.chat.completions.create(**kwargs)
-    except Exception as e:
+    except Exception:
         # If gpt-5 needs different params, surface error verbatim
         raise
     msg = resp.choices[0].message
@@ -200,7 +200,7 @@ def main():
     print(f"Took: {time.time() - t0:.1f}s")
     print(f"Finish reasons: {finish_reasons}")
     print(f"Total prompt tokens: {total_prompt:,}, completion: {total_completion:,}")
-    print(f"\nReview: open review_app  (default points to gt_v7_samples.jsonl; use Open file...")
+    print("\nReview: open review_app  (default points to gt_v7_samples.jsonl; use Open file...")
     print(f"        to switch to {out_path.name})")
 
 

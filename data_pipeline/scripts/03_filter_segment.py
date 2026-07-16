@@ -195,7 +195,7 @@ def main():
             n_kept += 1  
         pbar.close()
 
-    print(f"\n=== Filter Report ===")
+    print("\n=== Filter Report ===")
     print(f"Total input:        {n_total:>8}")
     print(f"No real action:     {n_no_real_action:>8} ({100*n_no_real_action/n_total:.1f}%)")
     print(f"No compressible:    {n_no_compressible:>8} ({100*n_no_compressible/n_total:.1f}%)")
@@ -204,7 +204,7 @@ def main():
     out_size = OUT.stat().st_size / 1e9
     print(f"Output size:        {out_size:.2f} GB")
 
-    print(f"\n=== Top action targets (input) ===")
+    print("\n=== Top action targets (input) ===")
     for name, c in action_dist_in.most_common(10):
         kept = action_dist_out.get(name, 0)
         print(f"  {name:<25} in: {c:>7}  kept: {kept:>7}")

@@ -139,7 +139,7 @@ def prepare_batch(stage: int):
     print(f"  Wrote batch input: {batch_input_path} ({size_mb:.1f} MB)")
     
     # Sanity check: print one request
-    print(f"\n=== Sample request (first item) ===")
+    print("\n=== Sample request (first item) ===")
     with open(batch_input_path, "rb") as f:
         first = orjson.loads(f.readline())
         print(f"custom_id: {first['custom_id']}")
@@ -175,7 +175,7 @@ def submit_batch(stage: int):
         upload = client.files.create(file=f, purpose="batch")
     print(f"  File ID: {upload.id}")
     
-    print(f"[submit] Creating batch ...")
+    print("[submit] Creating batch ...")
     batch = client.batches.create(
         input_file_id=upload.id,
         endpoint="/v1/chat/completions",
@@ -195,7 +195,7 @@ def submit_batch(stage: int):
             "submitted_at": time.time(),
         }, f, indent=2)
     print(f"  Saved batch meta: {batch_meta_path}")
-    print(f"\nCheck progress: python scripts/06_distill.py status")
+    print("\nCheck progress: python scripts/06_distill.py status")
 
 
 # === Status check ===
@@ -425,7 +425,7 @@ def validate_stage(stage: int):
         sys.exit(f"Run download first: {output_path} not found")
     
     # Load original SFT samples by sample_id (need user message + budget)
-    print(f"[validate] Loading SFT pool to find inputs ...")
+    print("[validate] Loading SFT pool to find inputs ...")
     pool_by_id = {}
     with open(TRAIN_FULL, "rb") as f:
         for line in tqdm(f, desc="Reading pool"):
@@ -457,7 +457,7 @@ def validate_stage(stage: int):
         print(f"[validate] WARNING: {LABELED_PATH} missing — SHRUNK recall check skipped")
 
     # Iterate batch outputs
-    print(f"[validate] Validating outputs ...")
+    print("[validate] Validating outputs ...")
     reject_reasons = Counter()
     passed_samples = []
     n_total = 0
@@ -508,7 +508,7 @@ def validate_stage(stage: int):
     print(f"\n=== Stage {stage} Validation Report ===")
     print(f"Total: {n_total}, passed: {n_passed} ({100*n_passed/n_total:.1f}%)")
     print(f"Rejected: {n_rejected} ({100*n_rejected/n_total:.1f}%)")
-    print(f"\nReject breakdown:")
+    print("\nReject breakdown:")
     for reason, count in reject_reasons.most_common():
         print(f"  {reason:<25} {count:>5} ({100*count/n_total:.1f}%)")
     
@@ -520,7 +520,7 @@ def validate_stage(stage: int):
         ]
         budget_lens = [s["metadata"]["compression_budget"] for s in passed_samples]
         
-        print(f"\nLength adherence (compressed_tokens / budget):")
+        print("\nLength adherence (compressed_tokens / budget):")
         ratios = [c / b for c, b in zip(compressed_lens, budget_lens)]
         ratios.sort()
         n = len(ratios)
@@ -552,7 +552,7 @@ def validate_stage(stage: int):
     
     # Decision gate
     pass_rate = n_passed / n_total if n_total else 0
-    print(f"\n=== Decision Gate ===")
+    print("\n=== Decision Gate ===")
     if pass_rate < 0.70:
         print(f"⚠️  Pass rate {pass_rate*100:.1f}% < 70%. STOP. Investigate top reject reasons.")
     elif pass_rate < 0.85:

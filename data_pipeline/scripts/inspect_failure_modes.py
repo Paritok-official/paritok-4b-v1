@@ -12,7 +12,7 @@ Output: data/distill/stage0_failure_modes.md
 import re
 import sys
 import importlib.util
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 import orjson
@@ -197,11 +197,11 @@ def main():
         lrs = sorted([r["len_ratio"] for r in rows])
         brs = sorted([r["budget_ratio"] for r in rows])
         mkrs = sorted([r["marker_count"] for r in rows])
-        f.write(f"len_ratio (output_chars / input_chars):\n")
+        f.write("len_ratio (output_chars / input_chars):\n")
         f.write(f"  - p25 {lrs[n//4]:.2f}, p50 {lrs[n//2]:.2f}, p75 {lrs[3*n//4]:.2f}, p95 {lrs[int(n*0.95)]:.2f}\n\n")
-        f.write(f"budget_ratio:\n")
+        f.write("budget_ratio:\n")
         f.write(f"  - p25 {brs[n//4]:.2f}, p50 {brs[n//2]:.2f}, p75 {brs[3*n//4]:.2f}, p95 {brs[int(n*0.95)]:.2f}\n\n")
-        f.write(f"abstractive marker count per output:\n")
+        f.write("abstractive marker count per output:\n")
         f.write(f"  - p25 {mkrs[n//4]}, p50 {mkrs[n//2]}, p75 {mkrs[3*n//4]}, p95 {mkrs[int(n*0.95)]}\n")
         f.write(f"  - n_zero_markers: {sum(1 for m in mkrs if m == 0)}\n\n")
 

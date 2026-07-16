@@ -54,7 +54,7 @@ def parse_request(body: dict) -> ParsedRequest:
     )
 
 
-import re as _re
+import re as _re  # noqa: E402 — colocated with the helper below
 
 _SYSTEM_REMINDER = _re.compile(r"<system-reminder>.*?</system-reminder>", _re.DOTALL)
 

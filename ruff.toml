@@ -1,0 +1,13 @@
+# Ruff config. CI runs `ruff check .` (default rule set: pyflakes + a subset of
+# pycodestyle). The shipped `paritok/` package is linted strictly; the
+# data_pipeline/ scripts are one-off research/data tooling (their .jsonl output
+# is gitignored and regenerable), so a few stylistic rules are relaxed there
+# rather than churning throwaway code.
+
+[lint.per-file-ignores]
+"data_pipeline/**" = [
+    "E741",  # ambiguous variable name (l/I/O) — fine in short analysis loops
+    "E731",  # lambda assignment
+    "E702",  # multiple statements on one line (semicolon)
+    "F841",  # unused local (kept for readability in inspection scripts)
+]

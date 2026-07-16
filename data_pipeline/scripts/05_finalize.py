@@ -293,7 +293,7 @@ def pass1_combined_scan() -> tuple[set, list, Counter, int]:
                 n_total += 1
                 try:
                     sample = orjson.loads(line)
-                except Exception as e:
+                except Exception:
                     reject_reasons["json_parse_error"] += 1
                     offset = f.tell()
                     line = f.readline()
@@ -320,7 +320,7 @@ def pass1_combined_scan() -> tuple[set, list, Counter, int]:
     n_filtered = sum(reject_reasons.values())
     print(f"  Total samples: {n_total}, passed: {n_passed}, filtered: {n_filtered}")
     print(f"  Pass rate: {100*n_passed/n_total:.1f}%")
-    print(f"  Reject breakdown:")
+    print("  Reject breakdown:")
     for reason, count in reject_reasons.most_common():
         print(f"    {reason:<22} {count:>8} ({100*count/n_total:.1f}%)")
     print(f"  Unique trajectories (passing filter): {len(all_traj_ids)}")
@@ -567,20 +567,20 @@ def write_stats(stats: dict, reject_reasons: Counter, n_total: int):
         json.dump(serializable, f, indent=2)
 
     print(f"\n{'='*60}")
-    print(f"=== Final Report ===")
+    print("=== Final Report ===")
     print(f"{'='*60}")
     print(f"Train samples: {stats['n_train']}")
     print(f"Val samples:   {stats['n_val']}")
     print(f"Train budget avg: {stats['train_budget_avg']:.0f} tokens")
     print(f"Val budget avg:   {stats['val_budget_avg']:.0f} tokens")
 
-    print(f"\nTrain length distribution:")
+    print("\nTrain length distribution:")
     for k in ["short", "medium", "long", "xlong"]:
         v = stats["train_token_dist"].get(k, 0)
         pct = 100 * v / stats["n_train"] if stats["n_train"] > 0 else 0
         print(f"  {k:<8} {v:>7} ({pct:.1f}%)")
 
-    print(f"\nTrain budget percentiles by length bucket:")
+    print("\nTrain budget percentiles by length bucket:")
     bucket_data = stats["train_budget_by_bucket"]
     for bucket in ["short", "medium", "long", "xlong"]:
         if bucket in bucket_data and bucket_data[bucket]:
@@ -591,7 +591,7 @@ def write_stats(stats: dict, reject_reasons: Counter, n_total: int):
             p95 = vals[int(n * 0.95)]
             print(f"  {bucket:<8} avg={avg:>5.0f}  p50={p50:>5}  p95={p95:>5}  (n={n})")
 
-    print(f"\nTrain action distribution:")
+    print("\nTrain action distribution:")
     for k, v in stats["train_action_dist"].most_common():
         pct = 100 * v / stats["n_train"] if stats["n_train"] > 0 else 0
         print(f"  {k:<25} {v:>7} ({pct:.1f}%)")

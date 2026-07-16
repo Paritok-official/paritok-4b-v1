@@ -289,7 +289,8 @@ def lint(body: Optional[str]) -> Optional[str]:
 
 
 if __name__ == "__main__":
-    import sys, json
+    import sys
+    import json
     if len(sys.argv) < 2:
         print("usage: python lint_compressed.py <gt_vN_samples.jsonl>")
         sys.exit(1)
