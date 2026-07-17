@@ -15,6 +15,7 @@ Supports:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -31,44 +32,67 @@ class ProxyStats:
     total_compressed_tokens: int = 0
     total_tools_filtered: int = 0
     total_items_compressed: int = 0
+    # Per-model buckets for the parts THIS middleware touches — the content it
+    # compresses (tool results / file reads / old history) PLUS the tool schemas
+    # it stubs. {model: {"orig", "comp"}}: `orig` = what those parts would be
+    # without paritok; `comp` = what we actually forward. Everything paritok
+    # can't affect (system prompt, model output, ...) is deliberately excluded.
+    by_model: dict = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
 
-    def record(self, stats) -> None:
-        """Fold one request's CompressionStats into the running totals."""
+    @staticmethod
+    def _new_bucket() -> dict:
+        return {"orig": 0, "comp": 0}
+
+    def record(self, stats, model: str = "", *,
+               tools_original_tokens: int = 0, tools_compressed_tokens: int = 0) -> None:
+        """Fold one request into the totals. Counts only what paritok touches:
+        the content it compressed (from `stats`) plus the tool-schema tokens it
+        stubbed away (schema size before vs after discovery + virtual injection)."""
         self.requests_processed += 1
-        self.total_original_tokens += stats.original_tokens
-        self.total_compressed_tokens += stats.compressed_tokens
         self.total_tools_filtered += stats.tools_filtered
         self.total_items_compressed += stats.items_compressed
-
-    @property
-    def uptime_seconds(self) -> float:
-        return time.time() - self.start_time
+        orig = stats.original_tokens + tools_original_tokens
+        comp = stats.compressed_tokens + tools_compressed_tokens
+        self.total_original_tokens += orig
+        self.total_compressed_tokens += comp
+        bucket = self.by_model.setdefault(model or "unknown", self._new_bucket())
+        bucket["orig"] += orig
+        bucket["comp"] += comp
 
     @property
     def total_saved_tokens(self) -> int:
         return self.total_original_tokens - self.total_compressed_tokens
 
     @property
-    def saved_percent(self) -> float:
-        """Share of compressible tokens removed, 0-100."""
-        if self.total_original_tokens == 0:
-            return 0.0
-        return round(100.0 * self.total_saved_tokens / self.total_original_tokens, 1)
+    def estimated_cost_saved_usd(self) -> float:
+        """What paritok saved on the parts it touched (content compression + tool
+        stubbing), at each model's own input rate (unknown → $3/M). List price;
+        not cache-adjusted (cache is a property of the full bill we exclude)."""
+        from paritok.proxy.pricing import input_price_per_token
+        return round(sum((b["orig"] - b["comp"]) * input_price_per_token(m)
+                         for m, b in self.by_model.items()), 4)
+
+    @property
+    def estimated_cost_usd(self) -> float:
+        """Input cost of those same touched parts AS SENT (compressed), per model.
+        This is the 'total' paritok is compared against — it excludes what paritok
+        can't affect (system prompt, model output)."""
+        from paritok.proxy.pricing import input_price_per_token
+        return round(sum(b["comp"] * input_price_per_token(m)
+                         for m, b in self.by_model.items()), 4)
 
     def snapshot(self) -> dict:
-        """The /stats payload: raw totals plus the human-friendly derived rates."""
-        reqs = self.requests_processed or 1  # avoid div-by-zero for averages
+        """The /stats payload — scoped to what paritok actually intervenes in."""
+        orig, comp = self.total_original_tokens, self.total_compressed_tokens
         return {
-            "requests_processed": self.requests_processed,
-            "total_original_tokens": self.total_original_tokens,
-            "total_compressed_tokens": self.total_compressed_tokens,
-            "total_saved_tokens": self.total_saved_tokens,
-            "saved_percent": self.saved_percent,
-            "avg_saved_tokens_per_request": round(self.total_saved_tokens / reqs, 1),
-            "items_compressed": self.total_items_compressed,
-            "total_tools_filtered": self.total_tools_filtered,
-            "uptime_seconds": round(self.uptime_seconds, 1),
+            "total_requests": self.requests_processed,
+            "input_tokens_original": orig,
+            "input_tokens_compressed": comp,
+            "compression_ratio": round(comp / orig, 3) if orig else 0.0,
+            "tokens_saved": self.total_saved_tokens,
+            "estimated_cost_saved_usd": f"${self.estimated_cost_saved_usd:.2f}",
+            "estimated_cost_usd": f"${self.estimated_cost_usd:.2f}",
         }
 
 
@@ -109,6 +133,7 @@ def create_app(
     from paritok.proxy.adapters import anthropic as anth_adapter
     from paritok.proxy.adapters import openai as oai_adapter
     from paritok.proxy.adapters import responses as resp_adapter
+    from paritok.token_counter import count_tokens
 
     # Initialize
     config = ParitokConfig.load(config_path) if config_path else ParitokConfig()
@@ -117,6 +142,39 @@ def create_app(
     if http_client is None:
         http_client = httpx.AsyncClient(timeout=120.0)
 
+    def _tools_tokens(tools) -> int:
+        """Token size of a tool-schema list (0 when there are none)."""
+        return count_tokens(json.dumps(tools)) if tools else 0
+
+    # Fire-and-forget background tasks (hosted tool-savings reports). Kept in a
+    # set so they aren't garbage-collected before they finish.
+    _bg_tasks: set = set()
+
+    async def _send_tool_meter(model: str, tools_orig: int, tools_comp: int) -> None:
+        base = config.gpu_server.base_url.rstrip("/")
+        headers = {"Content-Type": "application/json"}
+        if config.gpu_server.api_key:
+            headers["Authorization"] = f"Bearer {config.gpu_server.api_key}"
+        try:
+            await http_client.post(
+                f"{base}/meter",
+                json={"tokens_in": tools_orig, "tokens_out": tools_comp,
+                      "upstream_model": model or ""},
+                headers=headers, timeout=10.0,
+            )
+        except Exception:  # noqa: BLE001 — metering is best-effort
+            pass
+
+    def _report_tool_savings(model: str, tools_orig: int, tools_comp: int) -> None:
+        """In hosted (GPU-server) mode, report the proxy's local tool-schema
+        stubbing to the website so its dashboard matches self-hosted /stats
+        (content + tools). Self-hosted mode already counts it in /stats locally."""
+        if not config.use_gpu_server or tools_orig <= 0 or tools_orig <= tools_comp:
+            return
+        task = asyncio.create_task(_send_tool_meter(model, tools_orig, tools_comp))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+
     # ── Anthropic handler ──
 
     async def handle_anthropic(request: Request) -> Response:
@@ -124,11 +182,17 @@ def create_app(
         parsed = anth_adapter.parse_request(body)
 
         # Use shared engine for compression + tool discovery
+        client_tools = parsed.tools  # the caller's full tool schemas, pre-stub
         parsed.messages, parsed.tools, stats, stubbed = engine.process_request(
-            parsed.messages, parsed.tools
+            parsed.messages, parsed.tools, upstream_model=body.get("model", "")
         )
 
-        proxy_stats.record(stats)
+        tools_orig_tok = _tools_tokens(client_tools)
+        tools_comp_tok = _tools_tokens(parsed.tools)
+        proxy_stats.record(stats, model=body.get("model", ""),
+                           tools_original_tokens=tools_orig_tok,
+                           tools_compressed_tokens=tools_comp_tok)
+        _report_tool_savings(body.get("model", ""), tools_orig_tok, tools_comp_tok)
 
         query = anth_adapter.extract_query(parsed.messages)
         logger.info("Request #%d, saved %d tokens, query=%s",
@@ -166,6 +230,7 @@ def create_app(
 
         # OpenAI wraps tools in {"type": "function", "function": {...}}
         # Unwrap for engine, then re-wrap after
+        client_tools = parsed.tools  # caller's full tool schemas, pre-stub
         raw_tools = None
         if parsed.tools:
             raw_tools = [t.get("function", t) for t in parsed.tools]
@@ -178,7 +243,8 @@ def create_app(
             if msg.get("role") == "tool":
                 content = msg.get("content", "")
                 if isinstance(content, str) and content.strip():
-                    cr = engine.pipeline.compress(content, query=query)
+                    cr = engine.pipeline.compress(content, query=query,
+                                                  upstream_model=body.get("model", ""))
                     if not cr.metadata.get("skipped"):
                         parsed.messages[i] = {**msg, "content": cr.compressed}
                         stats.original_tokens += cr.original_tokens
@@ -205,7 +271,12 @@ def create_app(
                 for t in processed_tools
             ]
 
-        proxy_stats.record(stats)
+        tools_orig_tok = _tools_tokens(client_tools)
+        tools_comp_tok = _tools_tokens(parsed.tools)
+        proxy_stats.record(stats, model=body.get("model", ""),
+                           tools_original_tokens=tools_orig_tok,
+                           tools_compressed_tokens=tools_comp_tok)
+        _report_tool_savings(body.get("model", ""), tools_orig_tok, tools_comp_tok)
 
         # If expand_context was injected, tell the model (once, via system) about the
         # [REF:] convention. The proxy resolves expand_context server-side (same as the
@@ -257,7 +328,8 @@ def create_app(
         for i, item in enumerate(input_items):
             if (item.get("type") == "function_call_output"
                     and isinstance(item.get("output"), str) and item["output"].strip()):
-                cr = engine.pipeline.compress(item["output"], query=query)
+                cr = engine.pipeline.compress(item["output"], query=query,
+                                              upstream_model=parsed.model)
                 if not cr.metadata.get("skipped"):
                     input_items[i] = {**item, "output": cr.compressed}
                     stats.original_tokens += cr.original_tokens
@@ -278,7 +350,12 @@ def create_app(
             ]
         parsed.input = input_items
 
-        proxy_stats.record(stats)
+        tools_orig_tok = _tools_tokens(raw_tools)
+        tools_comp_tok = _tools_tokens(parsed.tools)
+        proxy_stats.record(stats, model=body.get("model", ""),
+                           tools_original_tokens=tools_orig_tok,
+                           tools_compressed_tokens=tools_comp_tok)
+        _report_tool_savings(body.get("model", ""), tools_orig_tok, tools_comp_tok)
 
         if parsed.tools and any(t.get("name") == "expand_context" for t in parsed.tools):
             parsed.instructions = _prepend_ref_guidance_responses(parsed.instructions)

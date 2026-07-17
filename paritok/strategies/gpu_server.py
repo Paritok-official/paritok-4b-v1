@@ -67,6 +67,12 @@ class GpuServerStrategy:
             "level": level,
             "kind": kind,
         }
+        # The upstream LLM the user is actually calling (e.g. claude-sonnet-4,
+        # gpt-5) — passed through so the hosted gateway can attribute savings
+        # per model. Omitted when unknown.
+        upstream_model = kwargs.get("upstream_model")
+        if upstream_model:
+            payload["upstream_model"] = upstream_model
         headers = {}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"

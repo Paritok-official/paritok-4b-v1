@@ -294,19 +294,17 @@ curl http://127.0.0.1:8080/stats    # live compression totals
 
 ```json
 {
-  "requests_processed": 42,
-  "total_original_tokens": 512340,
-  "total_compressed_tokens": 138221,
-  "total_saved_tokens": 374119,
-  "saved_percent": 73.0,
-  "avg_saved_tokens_per_request": 8907.6,
-  "items_compressed": 128,
-  "total_tools_filtered": 61,
-  "uptime_seconds": 613.2
+  "total_requests": 42,
+  "input_tokens_original": 512340,
+  "input_tokens_compressed": 138221,
+  "compression_ratio": 0.27,
+  "tokens_saved": 374119,
+  "estimated_cost_saved_usd": "$1.01",
+  "estimated_cost_usd": "$0.37"
 }
 ```
 
-`saved_percent` is the share of compressible tokens removed — expect **~74%** on typical coding-agent traffic.
+These numbers are **scoped to what Paritok actually intervenes in** — the content it compresses (tool results / file reads / old history) plus the tool schemas it stubs. Everything it can't affect (your system prompt, the model's output) is deliberately excluded, so `estimated_cost_saved_usd` vs `estimated_cost_usd` is a clean before/after on Paritok's own domain. `compression_ratio` is compressed ÷ original on that domain (lower is better). Costs price input tokens only, at **each model's own input list price** (the proxy sees the `model` on every request; unknown → $3/M). List-price estimates — edit the rates in [`paritok/proxy/pricing.py`](paritok/proxy/pricing.py). The hosted dashboard at [paritok.com](https://paritok.com) reports the same content + tool basis for `use_gpu_server: true` traffic.
 
 ### SDK mode (alternative)
 

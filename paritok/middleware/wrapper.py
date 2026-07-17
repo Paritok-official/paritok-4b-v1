@@ -86,6 +86,7 @@ class ParitokEngine:
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
+        upstream_model: str = "",
     ) -> tuple[list[dict], list[dict] | None, CompressionStats, list[dict]]:
         """Process a request: compress context, filter tools, inject virtuals.
 
@@ -117,7 +118,8 @@ class ParitokEngine:
             stats.tools_kept = stats.tools_original
 
         # 2. Compress tool_result content blocks
-        messages = _compress_messages(messages, self.pipeline, stats, query=query)
+        messages = _compress_messages(messages, self.pipeline, stats, query=query,
+                                      upstream_model=upstream_model)
 
         # 3. Compress old conversation history if over threshold
         history_cfg = self.config.history
@@ -128,6 +130,7 @@ class ParitokEngine:
                 keep_recent_turns=history_cfg.keep_recent_turns,
                 context_threshold=history_cfg.context_threshold,
                 context_window=history_cfg.context_window,
+                upstream_model=upstream_model,
             )
 
         # 4. Inject virtual tools
@@ -350,6 +353,7 @@ def _compress_messages(
     stats: CompressionStats,
     *,
     query: str | None = None,
+    upstream_model: str = "",
 ) -> list[dict]:
     """Walk messages and compress tool_result content blocks."""
     tool_index = _build_tool_use_index(messages)
@@ -364,7 +368,8 @@ def _compress_messages(
                         tool_index.get(block.get("tool_use_id", ""))
                     )
                     block = _compress_block(
-                        block, pipeline, stats, query=query, source=source
+                        block, pipeline, stats, query=query, source=source,
+                        upstream_model=upstream_model,
                     )
                 new_blocks.append(block)
             result.append({**msg, "content": new_blocks})
@@ -380,12 +385,14 @@ def _compress_block(
     *,
     query: str | None = None,
     source: str | None = None,
+    upstream_model: str = "",
 ) -> dict:
     """Compress the content inside a tool_result block."""
     content = block.get("content", "")
 
     if isinstance(content, str) and content.strip():
-        cr = pipeline.compress(content, query=query, source=source)
+        cr = pipeline.compress(content, query=query, source=source,
+                               upstream_model=upstream_model)
         stats.original_tokens += cr.original_tokens
         stats.compressed_tokens += cr.compressed_tokens
         if cr.metadata.get("skipped"):
@@ -402,7 +409,8 @@ def _compress_block(
             if isinstance(item, dict) and item.get("type") == "text":
                 text = item.get("text", "")
                 if text.strip():
-                    cr = pipeline.compress(text, query=query, source=source)
+                    cr = pipeline.compress(text, query=query, source=source,
+                                           upstream_model=upstream_model)
                     stats.original_tokens += cr.original_tokens
                     stats.compressed_tokens += cr.compressed_tokens
                     if cr.metadata.get("skipped"):
@@ -430,6 +438,7 @@ def _compress_history(
     keep_recent_turns: int = 4,
     context_threshold: float = 0.8,
     context_window: int = 200_000,
+    upstream_model: str = "",
 ) -> list[dict]:
     """Compress old conversation turns if total context exceeds threshold.
 
@@ -510,6 +519,7 @@ def _compress_history(
             level="L3",
             kind="assistant_thinking",
             system_prompt=HISTORY_SUMMARY_PROMPT,
+            upstream_model=upstream_model,
         )
     except (ConnectionError, TimeoutError, ValueError) as e:
         import logging

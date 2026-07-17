@@ -132,6 +132,7 @@ class CompressionPipeline:
         kind: str | None = None,
         target_ratio: str | None = None,
         source: str | None = None,
+        upstream_model: str | None = None,
     ) -> CompressionResult:
         """Compress content via the local SEG model.
 
@@ -215,6 +216,7 @@ class CompressionPipeline:
             level=level,
             kind=kind,
             target_ratio=target_ratio,
+            upstream_model=upstream_model,
         )
 
         # 6. Effectiveness check
