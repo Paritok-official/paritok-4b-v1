@@ -299,12 +299,11 @@ curl http://127.0.0.1:8080/stats    # live compression totals
   "input_tokens_compressed": 138221,
   "compression_ratio": 0.27,
   "tokens_saved": 374119,
-  "estimated_cost_saved_usd": "$1.01",
-  "estimated_cost_usd": "$0.37"
+  "estimated_cost_saved_usd": "$1.01"
 }
 ```
 
-These numbers are **scoped to what Paritok actually intervenes in** — the content it compresses (tool results / file reads / old history) plus the tool schemas it stubs. Everything it can't affect (your system prompt, the model's output) is deliberately excluded, so `estimated_cost_saved_usd` vs `estimated_cost_usd` is a clean before/after on Paritok's own domain. `compression_ratio` is compressed ÷ original on that domain (lower is better). Costs price input tokens only, at **each model's own input list price** (the proxy sees the `model` on every request; unknown → $3/M). List-price estimates — edit the rates in [`paritok/proxy/pricing.py`](paritok/proxy/pricing.py). The hosted dashboard at [paritok.com](https://paritok.com) reports the same content + tool basis for `use_gpu_server: true` traffic.
+These numbers are **scoped to what Paritok actually intervenes in** — the content it compresses (tool results / file reads / old history) plus the tool schemas it stubs. Everything it can't affect (your system prompt, the model's output) is deliberately excluded. `compression_ratio` is compressed ÷ original on that domain (lower is better). `estimated_cost_saved_usd` prices the tokens saved at **each model's own input list price** (the proxy sees the `model` on every request; unknown → $3/M) — a list-price estimate, edit the rates in [`paritok/proxy/pricing.py`](paritok/proxy/pricing.py). The hosted dashboard at [paritok.com](https://paritok.com) reports the same content + tool basis for `use_gpu_server: true` traffic.
 
 ### SDK mode (alternative)
 

@@ -73,15 +73,6 @@ class ProxyStats:
         return round(sum((b["orig"] - b["comp"]) * input_price_per_token(m)
                          for m, b in self.by_model.items()), 4)
 
-    @property
-    def estimated_cost_usd(self) -> float:
-        """Input cost of those same touched parts AS SENT (compressed), per model.
-        This is the 'total' paritok is compared against — it excludes what paritok
-        can't affect (system prompt, model output)."""
-        from paritok.proxy.pricing import input_price_per_token
-        return round(sum(b["comp"] * input_price_per_token(m)
-                         for m, b in self.by_model.items()), 4)
-
     def snapshot(self) -> dict:
         """The /stats payload — scoped to what paritok actually intervenes in."""
         orig, comp = self.total_original_tokens, self.total_compressed_tokens
@@ -92,7 +83,6 @@ class ProxyStats:
             "compression_ratio": round(comp / orig, 3) if orig else 0.0,
             "tokens_saved": self.total_saved_tokens,
             "estimated_cost_saved_usd": f"${self.estimated_cost_saved_usd:.2f}",
-            "estimated_cost_usd": f"${self.estimated_cost_usd:.2f}",
         }
 
 
