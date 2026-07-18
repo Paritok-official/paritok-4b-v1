@@ -20,6 +20,12 @@ import re
 
 from paritok.token_counter import count_tokens
 
+# The model runs in an 8192-token context (Modelfile num_ctx) and each call also
+# carries a ~2.2-2.9k-token system prompt, so a chunk + the system prompt + room
+# to generate the compressed output must all fit in 8192. At 3000 the prompt still
+# fits comfortably (3000 + ~2.9k ≈ 5.9k < 8192); _call_ollama caps num_predict to
+# whatever context is left, so oversized chunks no longer 400 (they just get a
+# smaller generation budget). The training/benchmark value was 2000.
 CHUNK_SIZE = 3000
 CHUNK_OVERLAP = 0
 MAX_SINGLE_BLOCK = 3000
@@ -70,8 +76,18 @@ def split_into_chunks_structural(
     boundaries = _find_structural_boundaries(text)
 
     if not boundaries:
-        raw_tok = count_tokens(text)
-        return [(text, 1, len(lines), raw_tok)]
+        # No class/def boundaries at all — markdown, prose, directory listings,
+        # logs, or line-numbered files whose structure the regex can't see. Do NOT
+        # return the whole thing as one chunk: a large boundary-less input would be
+        # sent as a single oversized SEG that overflows the model context (HTTP
+        # 400). Hard-split by tokens so every chunk stays within chunk_size.
+        chunks: list[tuple[str, int, int, int]] = []
+        start = 0
+        for piece in _token_split_block(lines, chunk_size):
+            piece_text = "\n".join(piece)
+            chunks.append((piece_text, start + 1, start + len(piece), count_tokens(piece_text)))
+            start += len(piece)
+        return chunks
 
     blocks: list[tuple[int, int]] = []
     if boundaries[0] > 0:

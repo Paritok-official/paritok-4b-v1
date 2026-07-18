@@ -59,6 +59,20 @@ _VALID_LEVELS = {"L0", "L1", "L2", "L3"}
 # Training used tiktoken cl100k_base for token counts; keep that for parity.
 _TOKEN_ENCODING = "cl100k_base"
 
+# Ollama rejects a request up-front when prompt_tokens + num_predict exceeds the
+# model's context window (num_ctx, 8192 in the shipped Modelfile), returning a
+# 400 "exceeds the available context size". When capping num_predict against the
+# remaining context we leave this margin, because the model's own tokenizer
+# counts differently than the cl100k estimate we use to size the prompt.
+_CTX_SAFETY_MARGIN = 512
+# The model's own tokenizer (Qwen) counts more tokens than the cl100k estimate we
+# use to size the prompt; inflate our estimate by this factor before reserving the
+# rest of the context window, so the real request still fits under num_ctx.
+_TOKENIZER_SLACK = 1.15
+# Never request fewer than this many output tokens (a chunk always fits, so this
+# floor is only a defensive guard for unusually large system prompts).
+_MIN_NUM_PREDICT = 256
+
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 # Unwrap the model's [SEG ...]<body>[/SEG] reply. DOTALL so bodies span lines.
 _SEG_RE = re.compile(r"\[SEG\b[^\]]*\]\s*(.*?)\s*\[/SEG\]", re.DOTALL)
@@ -193,6 +207,22 @@ class LocalModelStrategy:
         # size (bounded by the chunk budget) with headroom for the SEG wrapper.
         input_tokens = count_tokens(content, _TOKEN_ENCODING)
         max_tokens = min(input_tokens + 256, CHUNK_SIZE)
+
+        # ...but Ollama enforces prompt_tokens + num_predict <= num_ctx BEFORE
+        # generating. A ~3k-token chunk + the ~2.9k-token system prompt + an equal
+        # num_predict overflows the 8192 window and Ollama returns HTTP 400. Cap
+        # num_predict at the context left after the prompt. The compressed output
+        # is far smaller than this cap, so generation still stops naturally.
+        num_ctx = getattr(self.config, "num_ctx", 8192)
+        # The model tokenizer counts more tokens than our cl100k estimate, so pad
+        # the prompt size before reserving the rest of the window for generation.
+        prompt_tokens = count_tokens(system, _TOKEN_ENCODING) + count_tokens(
+            user_message, _TOKEN_ENCODING
+        )
+        est_prompt = int(prompt_tokens * _TOKENIZER_SLACK)
+        ctx_budget = num_ctx - est_prompt - _CTX_SAFETY_MARGIN
+        if ctx_budget < max_tokens:
+            max_tokens = max(ctx_budget, _MIN_NUM_PREDICT)
 
         # Bearer auth: empty for local Ollama, set for the Paritok GPU server
         # (or any self-hosted endpoint behind an API gateway).

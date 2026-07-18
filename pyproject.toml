@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "paritok"
-version = "1.1.0"
+version = "1.1.1"
 description = "Open-source context compression for AI coding agents. A middle layer between your agent and the LLM API — self-host the 4B model or use the Paritok GPU server."
 readme = "README.md"
 license = "Apache-2.0"

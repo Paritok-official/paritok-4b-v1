@@ -17,6 +17,7 @@ class LocalModelConfig:
     temperature: float = 0.0
     timeout: float = 120.0
     api_key: str = ""  # optional bearer token (empty for local Ollama)
+    num_ctx: int = 8192  # model context window (matches the shipped Modelfile); output is capped so prompt+generation fit
 
 
 @dataclass
