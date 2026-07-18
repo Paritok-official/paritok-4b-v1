@@ -14,7 +14,6 @@ Supports:
 """
 
 from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -199,7 +198,7 @@ def create_app(
         headers = _forward_headers(request)
         url = f"{anthropic_base_url}/v1/messages"
         forward_body = parsed.to_dict()
-
+       
         if parsed.stream:
             return await _stream_anthropic(url, headers, forward_body, stubbed)
         try:

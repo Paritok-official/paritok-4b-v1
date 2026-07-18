@@ -451,9 +451,9 @@ Reach us: [paritok9@gmail.com](mailto:paritok9@gmail.com) · X [@Paritok](https:
 If you find this work useful, please cite:
 
 ```bibtex
-@misc{paritok2026,
+@misc{paritok-4b-v1,
   author       = {Paritok Team},
-  title        = {Paritok: Fine-tuned Compression for AI Coding-Agent Context},
+  title        = {Paritok-4B-v1: An Open-Source Compression Model for AI Coding Agents},
   year         = {2026},
   publisher    = {GitHub},
   howpublished = {\url{https://github.com/Paritok-official/paritok-4b-v1}},
