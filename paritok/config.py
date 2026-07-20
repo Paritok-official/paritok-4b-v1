@@ -52,10 +52,16 @@ class CompressionConfig:
 
 @dataclass
 class ToolDiscoveryConfig:
-    strategy: str = "relevance"  # "relevance" | "passthrough"
+    strategy: str = "relevance"  # "relevance" | "passthrough" | "embedding"
     top_k: int = 5
 
-    _VALID_STRATEGIES: ClassVar[frozenset] = frozenset({"relevance", "passthrough"})
+    # --- "embedding" strategy: semantic top-k select + session freeze + adaptive apply.
+    #     Requires the optional dep: pip install "paritok[toolselect]"
+    k_max: int = 8                     # max tools kept in full schema
+    adaptive: bool = True              # coding tasks drop unselected MCP; MCP tasks stub them
+    mcp_signal_threshold: float = 1.0  # rank-weighted MCP signal needed to stub MCP tools
+
+    _VALID_STRATEGIES: ClassVar[frozenset] = frozenset({"relevance", "passthrough", "embedding"})
 
     def __post_init__(self):
         assert self.top_k > 0, f"top_k must be > 0, got {self.top_k}"

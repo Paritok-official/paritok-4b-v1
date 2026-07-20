@@ -104,11 +104,12 @@ class ParitokEngine:
         """
         stats = CompressionStats()
         query = _extract_query(messages)
+        session_id = _conversation_id(messages)
         stubbed_tools: list[dict] = []
 
         # 1. Tool Discovery — filter tool schemas
         if tools and query and len(tools) > self.config.tool_discovery.top_k:
-            result = self.discovery.filter_tools(tools, query)
+            result = self.discovery.filter_tools(tools, query, session_id=session_id)
             tools = result.tools
             stubbed_tools = result.stubbed_tools
             stats.tools_original = result.original_count
@@ -298,6 +299,29 @@ def _extract_query(messages: list[dict]) -> str | None:
                     if cleaned:
                         return cleaned
     return None
+
+
+def _conversation_id(messages: list[dict]) -> str:
+    """Stable per-conversation id = hash of the FIRST real user message. Lets the
+    'embedding' tool-discovery strategy freeze its selection across turns of the
+    same conversation (the first user message is constant turn-to-turn)."""
+    import hashlib
+    for msg in messages or []:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        text = None
+        if isinstance(content, str):
+            text = _clean_intent(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = _clean_intent(block.get("text", ""))
+                    if text:
+                        break
+        if text:
+            return hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+    return "default"
 
 
 def _build_tool_use_index(messages: list[dict]) -> dict[str, dict]:

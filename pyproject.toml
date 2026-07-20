@@ -29,6 +29,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 proxy = ["uvicorn>=0.30.0", "starlette>=0.38.0"]
+# Embedding-based tool selection (tool_discovery.strategy = "embedding").
+# CPU-only, free, no API. Model weights (bge-small, ~130MB) auto-download on first use.
+toolselect = ["sentence-transformers>=2.2.0", "numpy>=1.24"]
 
 [project.urls]
 Homepage = "https://paritok.com"

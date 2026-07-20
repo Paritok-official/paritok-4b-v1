@@ -130,19 +130,23 @@ class ToolDiscoveryPipeline:
     def __init__(self, config: ParitokConfig | None = None):
         self.config = config or ParitokConfig()
 
-    def filter_tools(self, tools: list[dict], query: str) -> DiscoveryResult:
-        """Filter tools based on query relevance.
+    def filter_tools(self, tools: list[dict], query: str,
+                     session_id: str | None = None) -> DiscoveryResult:
+        """Filter tool schemas to keep only the most relevant ones.
 
         Args:
             tools: Full list of tool schemas
             query: The user's current query
+            session_id: Stable per-conversation id (used by the "embedding" strategy to
+                freeze its selection across turns; ignored by relevance/passthrough)
 
         Returns:
             DiscoveryResult with tools (full + stubs), full_tools, and stubbed_tools
         """
         cfg = self.config.tool_discovery
+        limit = cfg.k_max if cfg.strategy == "embedding" else cfg.top_k
 
-        if cfg.strategy == "passthrough" or len(tools) <= cfg.top_k:
+        if cfg.strategy == "passthrough" or len(tools) <= limit:
             return DiscoveryResult(
                 tools=list(tools),
                 full_tools=list(tools),
@@ -153,8 +157,40 @@ class ToolDiscoveryPipeline:
 
         if cfg.strategy == "relevance":
             return self._relevance_filter(tools, query, cfg.top_k)
+        elif cfg.strategy == "embedding":
+            return self._embedding_filter(tools, query, session_id, cfg)
         else:
             raise ValueError(f"Unknown tool discovery strategy: {cfg.strategy}")
+
+    def _embedding_filter(self, tools: list[dict], query: str,
+                          session_id: str | None, cfg) -> DiscoveryResult:
+        """Semantic top-k selection with session freeze + rank-weighted adaptive apply.
+        Requires the optional dependency: pip install "paritok[toolselect]"."""
+        try:
+            from paritok.tool_topk import (
+                predict_topk_frozen, apply_selection_adaptive, apply_selection, _tool_name)
+        except ImportError as e:  # sentence-transformers not installed
+            raise RuntimeError(
+                "tool_discovery.strategy='embedding' needs the optional dependency.\n"
+                '  Install it with:  pip install "paritok[toolselect]"'
+            ) from e
+
+        sid = session_id or query or "default"
+        keep_ordered = predict_topk_frozen(sid, query, tools)
+        keep_names = set(keep_ordered)
+        if getattr(cfg, "adaptive", True):
+            new_tools = apply_selection_adaptive(
+                tools, keep_ordered, wire="anthropic",
+                mcp_signal_threshold=getattr(cfg, "mcp_signal_threshold", 1.0))
+        else:
+            new_tools = apply_selection(tools, keep_names, wire="anthropic")
+
+        full = [t for t in tools if _tool_name(t) in keep_names]
+        stubbed = [t for t in tools if _tool_name(t) not in keep_names]
+        return DiscoveryResult(
+            tools=new_tools, full_tools=full, stubbed_tools=stubbed,
+            original_count=len(tools), kept_count=len(keep_names),
+        )
 
     def search_filtered_tools(self, query: str, filtered_tools: list[dict]) -> list[dict]:
         """Search among filtered-out tools. Called by gateway_search_tools.
