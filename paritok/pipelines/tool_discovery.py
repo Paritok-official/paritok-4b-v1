@@ -193,12 +193,26 @@ class ToolDiscoveryPipeline:
         )
 
     def search_filtered_tools(self, query: str, filtered_tools: list[dict]) -> list[dict]:
-        """Search among filtered-out tools. Called by gateway_search_tools.
+        """Search among filtered-out tools. Called by gateway_search_tools to recover
+        a tool the model asked for.
+
+        Under the "embedding" strategy this uses semantic recall (bge-small) — keyword
+        search has a big query→tool gap for MCP tools (e.g. "send email" won't match
+        Gmail's create_draft/get_message). Falls back to keyword search otherwise.
 
         Args:
-            query: Search query
+            query: Search query (or the agent's plain-text "I don't have an X tool")
             filtered_tools: The stubbed_tools from DiscoveryResult
         """
+        if getattr(self.config.tool_discovery, "strategy", "") == "embedding":
+            try:
+                from paritok.tool_topk import recover_tools_from_help, _tool_name
+                names = set(recover_tools_from_help(query, filtered_tools, k=self.config.tool_discovery.k_max))
+                hits = [t for t in filtered_tools if _tool_name(t) in names]
+                if hits:
+                    return hits
+            except ImportError:
+                pass  # optional dep missing → fall back to keyword search
         return _search_tools(filtered_tools, query)
 
     def _relevance_filter(
