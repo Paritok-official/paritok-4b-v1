@@ -32,7 +32,8 @@ Compression only pays off when tools[] is large; on long msg-heavy sessions the
 win shifts to history/tool-output compression (a different pipe).
 """
 from __future__ import annotations
-import re, functools
+import re
+import functools
 from typing import Iterable
 
 DEFAULT_K = 8
