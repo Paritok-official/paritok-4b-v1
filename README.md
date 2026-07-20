@@ -115,6 +115,28 @@ Paritok is the only entry trained end-to-end on real coding-agent trajectories �
 
 ---
 
+## 🔧 Cache-friendly tool selection (embedding)
+
+Coding agents (Claude Code, Cursor, …) expose dozens of tools — often 70+ once you add MCP servers — on **every** request. That tool-schema JSON is a large slice of input tokens that's mostly irrelevant to the task at hand. Paritok can filter it semantically: set `tool_discovery.strategy: embedding` and it keeps only the handful of tools relevant to the user's intent in full schema, stubbing the rest.
+
+Crucially it's **prompt-cache friendly** — the selection is frozen per conversation, so the `tools[]` block stays stable turn-to-turn and doesn't invalidate the LLM's KV cache. Anything filtered out is still recoverable on demand (the model calls `gateway_search_tools`).
+
+It runs a small open embedding model, [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) (MIT-licensed, ~130MB), **entirely locally on CPU — no API, no per-token fee**.
+
+This is the **default** tool-discovery strategy (`paritok init` writes it for you):
+
+```yaml
+tool_discovery:
+  strategy: embedding
+```
+```bash
+pip install "paritok[toolselect]"   # adds sentence-transformers (CPU-only)
+```
+
+> **First request warms up the model (~10–15s, depending on network speed — it downloads bge-small from Hugging Face once, then caches locally).** Every request after that is instant (~15 ms).
+
+---
+
 ## 🚀 Quick Start
 
 Paritok runs as a **middle layer between your agent and the LLM API**. It intercepts each request, compresses the context, and forwards it upstream — your agent doesn't change, it just points at Paritok.
@@ -303,7 +325,14 @@ curl http://127.0.0.1:8080/stats    # live compression totals
 }
 ```
 
-These numbers are **scoped to what Paritok actually intervenes in** — the content it compresses (tool results / file reads / old history) plus the tool schemas it stubs. Everything it can't affect (your system prompt, the model's output) is deliberately excluded. `compression_ratio` is compressed ÷ original on that domain (lower is better). `estimated_cost_saved_usd` prices the tokens saved at **each model's own input list price** (the proxy sees the `model` on every request; unknown → $3/M) — a list-price estimate, edit the rates in [`paritok/proxy/pricing.py`](paritok/proxy/pricing.py). The hosted dashboard at [paritok.com](https://paritok.com) reports the same content + tool basis for `use_gpu_server: true` traffic.
+These numbers are **scoped to what Paritok actually intervenes in** — the content it compresses (tool results / file reads / old history) plus the tool schemas it stubs. Everything it can't affect (your system prompt, the model's output) is deliberately excluded. `compression_ratio` and `tokens_saved` are raw token counts on that domain (lower ratio is better).
+
+`estimated_cost_saved_usd` is **cache-aware**, not a flat list-price multiply, priced at each model's own input rate (the proxy sees the `model` on every request; unknown → $3/M):
+
+- **Compressed content** (file reads / tool output / history) is new input each turn, so its saving is priced at the full base rate.
+- **Tool schemas** are frozen per conversation (the selection is stable byte-for-byte across turns), so that block is a prompt-cache hit: its first turn is a cache **write** (`1.25×` base) and every turn after is a cache **read** (Claude `0.1×`, GPT-5 `0.1×`, gpt-4o `0.5×`, …). Counting it at full list price would massively overstate savings, since the uncompressed schemas would have been cached too.
+
+Edit the base rates and cache multipliers in [`paritok/proxy/pricing.py`](paritok/proxy/pricing.py). The hosted dashboard at [paritok.com](https://paritok.com) reports the same content + tool basis for `use_gpu_server: true` traffic.
 
 ### SDK mode (alternative)
 

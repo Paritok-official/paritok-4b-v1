@@ -41,7 +41,15 @@ class ProxyStats:
 
     @staticmethod
     def _new_bucket() -> dict:
-        return {"orig": 0, "comp": 0}
+        # content_* = compressed body (tool results / file reads / old history),
+        #   priced at the base input rate (it's genuinely new input each turn).
+        # The frozen tool-schema block is byte-stable across a conversation, so its
+        #   FIRST tool-bearing turn is a cache WRITE (~1.25x) and every turn after is
+        #   a cache READ (~0.1x). We split it so each side gets its true multiplier:
+        #   tools_first_* = that first turn; tools_rest_* = all subsequent turns.
+        return {"content_orig": 0, "content_comp": 0,
+                "tools_first_orig": 0, "tools_first_comp": 0,
+                "tools_rest_orig": 0, "tools_rest_comp": 0}
 
     def record(self, stats, model: str = "", *,
                tools_original_tokens: int = 0, tools_compressed_tokens: int = 0) -> None:
@@ -56,8 +64,13 @@ class ProxyStats:
         self.total_original_tokens += orig
         self.total_compressed_tokens += comp
         bucket = self.by_model.setdefault(model or "unknown", self._new_bucket())
-        bucket["orig"] += orig
-        bucket["comp"] += comp
+        bucket["content_orig"] += stats.original_tokens
+        bucket["content_comp"] += stats.compressed_tokens
+        if tools_original_tokens > 0:
+            # First tool-bearing turn for this model = the cache write; rest = reads.
+            slot = "first" if bucket["tools_first_orig"] == 0 else "rest"
+            bucket[f"tools_{slot}_orig"] += tools_original_tokens
+            bucket[f"tools_{slot}_comp"] += tools_compressed_tokens
 
     @property
     def total_saved_tokens(self) -> int:
@@ -65,12 +78,22 @@ class ProxyStats:
 
     @property
     def estimated_cost_saved_usd(self) -> float:
-        """What paritok saved on the parts it touched (content compression + tool
-        stubbing), at each model's own input rate (unknown → $3/M). List price;
-        not cache-adjusted (cache is a property of the full bill we exclude)."""
-        from paritok.proxy.pricing import input_price_per_token
-        return round(sum((b["orig"] - b["comp"]) * input_price_per_token(m)
-                         for m, b in self.by_model.items()), 4)
+        """Cache-aware $ saved on the parts paritok touches, at each model's own
+        input rate (unknown → $3/M). The compressed *content* is new input, priced
+        at the base rate. The frozen *tool-schema* block is byte-stable across a
+        conversation: its first turn is a cache WRITE (1.25x base), every turn after
+        is a cache READ (Claude 0.1x, GPT-5 0.1x, ...) — each priced at its true
+        multiplier rather than full list price."""
+        from paritok.proxy.pricing import (
+            input_price_per_token, cache_read_multiplier, CACHE_WRITE_MULT)
+        total = 0.0
+        for m, b in self.by_model.items():
+            rate = input_price_per_token(m)
+            content_saved = (b["content_orig"] - b["content_comp"]) * rate
+            tools_write = (b["tools_first_orig"] - b["tools_first_comp"]) * rate * CACHE_WRITE_MULT
+            tools_read = (b["tools_rest_orig"] - b["tools_rest_comp"]) * rate * cache_read_multiplier(m)
+            total += content_saved + tools_write + tools_read
+        return round(total, 4)
 
     def snapshot(self) -> dict:
         """The /stats payload — scoped to what paritok actually intervenes in."""
@@ -138,8 +161,14 @@ def create_app(
     # Fire-and-forget background tasks (hosted tool-savings reports). Kept in a
     # set so they aren't garbage-collected before they finish.
     _bg_tasks: set = set()
+    # Upstream models whose frozen tool block we've already reported as a cache
+    # WRITE. The first tool-bearing turn per model is the write; every one after
+    # is a cache read. Mirrors ProxyStats' tools_first/tools_rest split so the
+    # hosted dashboard's tool cost matches self-hosted /stats.
+    _tool_write_seen: set = set()
 
-    async def _send_tool_meter(model: str, tools_orig: int, tools_comp: int) -> None:
+    async def _send_tool_meter(model: str, tools_orig: int, tools_comp: int,
+                               cache_role: str) -> None:
         base = config.gpu_server.base_url.rstrip("/")
         headers = {"Content-Type": "application/json"}
         if config.gpu_server.api_key:
@@ -148,7 +177,7 @@ def create_app(
             await http_client.post(
                 f"{base}/meter",
                 json={"tokens_in": tools_orig, "tokens_out": tools_comp,
-                      "upstream_model": model or ""},
+                      "upstream_model": model or "", "cache_role": cache_role},
                 headers=headers, timeout=10.0,
             )
         except Exception:  # noqa: BLE001 — metering is best-effort
@@ -157,10 +186,20 @@ def create_app(
     def _report_tool_savings(model: str, tools_orig: int, tools_comp: int) -> None:
         """In hosted (GPU-server) mode, report the proxy's local tool-schema
         stubbing to the website so its dashboard matches self-hosted /stats
-        (content + tools). Self-hosted mode already counts it in /stats locally."""
+        (content + tools). Self-hosted mode already counts it in /stats locally.
+
+        The tool block is frozen (byte-stable) across a conversation, so it's a
+        prompt-cache WRITE on its first turn and a cache READ after — we tell the
+        website which, so it prices the saving at the cache rate, not list price."""
         if not config.use_gpu_server or tools_orig <= 0 or tools_orig <= tools_comp:
             return
-        task = asyncio.create_task(_send_tool_meter(model, tools_orig, tools_comp))
+        m = model or ""
+        if m in _tool_write_seen:
+            cache_role = "read"
+        else:
+            _tool_write_seen.add(m)
+            cache_role = "write"
+        task = asyncio.create_task(_send_tool_meter(m, tools_orig, tools_comp, cache_role))
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
 

@@ -24,10 +24,16 @@ Config (paritok.yaml):
 from __future__ import annotations
 
 import logging
+import threading
 
 from paritok.config import GpuServerConfig
 
 logger = logging.getLogger("paritok.gpu_server")
+
+# If a single compression waits longer than this, the hosted GPU is most likely
+# cold-starting / rebooting — tell the user in the proxy console so a slow first
+# request doesn't look like a hang.
+_REBOOT_NOTICE_AFTER_S = 30.0
 
 
 class GpuServerStrategy:
@@ -77,6 +83,14 @@ class GpuServerStrategy:
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
+        # Warn once, in the proxy console, if we're still waiting after 30s (the
+        # hosted GPU is probably rebooting). Cancelled the moment the call returns.
+        reboot_timer = threading.Timer(
+            _REBOOT_NOTICE_AFTER_S,
+            lambda: print("gpu server is rebooting please wait", flush=True),
+        )
+        reboot_timer.daemon = True
+        reboot_timer.start()
         try:
             resp = httpx.post(
                 f"{self._base()}/compress",
@@ -92,6 +106,8 @@ class GpuServerStrategy:
                 "uncompressed.", e,
             )
             return content
+        finally:
+            reboot_timer.cancel()
 
         if not data.get("gpu_available", False):
             # Endpoint is up but the GPU backend is offline — it echoed the

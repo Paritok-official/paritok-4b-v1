@@ -34,7 +34,7 @@ class GpuServerConfig:
     base_url: str = "https://www.paritok.com/api"
     model: str = "paritok-4b-v1"
     temperature: float = 0.0
-    timeout: float = 60.0
+    timeout: float = 90.0
     api_key: str = ""  # from the paritok.com dashboard, or PARITOK_API_KEY
 
 
@@ -52,11 +52,11 @@ class CompressionConfig:
 
 @dataclass
 class ToolDiscoveryConfig:
-    strategy: str = "relevance"  # "relevance" | "passthrough" | "embedding"
+    strategy: str = "embedding"  # "embedding" (default) | "relevance" | "passthrough"
     top_k: int = 5
 
-    # --- "embedding" strategy: semantic top-k select + session freeze + adaptive apply.
-    #     Requires the optional dep: pip install "paritok[toolselect]"
+    # --- "embedding" strategy (default): semantic top-k select + session freeze +
+    #     adaptive apply. Ships with the [proxy] extra; standalone: pip install "paritok[toolselect]"
     k_max: int = 8                     # max tools kept in full schema
     adaptive: bool = True              # coding tasks drop unselected MCP; MCP tasks stub them
     mcp_signal_threshold: float = 1.0  # rank-weighted MCP signal needed to stub MCP tools

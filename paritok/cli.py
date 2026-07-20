@@ -20,7 +20,7 @@ gpu_server:
   base_url: https://www.paritok.com/api   # POST /compress, GET /test
   model: paritok-4b-v1
   api_key: ""            # paste your key, or set env PARITOK_API_KEY
-  timeout: 60.0
+  timeout: 90.0
 
 # Self-hosted local model — only used when use_gpu_server: false.
 local_model:
@@ -42,8 +42,12 @@ history:
   context_window: 200000
 
 tool_discovery:
-  strategy: relevance      # "relevance" | "passthrough"
-  top_k: 5                 # keep top-K tool schemas, stub the rest
+  strategy: embedding      # "embedding" (default) | "relevance" | "passthrough"
+  top_k: 5                 # (relevance) keep top-K tool schemas, stub the rest
+  # embedding strategy (semantic select + session freeze + adaptive apply):
+  k_max: 8                 # max tools kept in full schema
+  adaptive: true           # coding tasks drop unselected MCP; MCP tasks stub them
+  mcp_signal_threshold: 1.0
 
 # Per-compression debug trace. Turn on to log every original→compressed pair.
 trace:

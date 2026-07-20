@@ -38,6 +38,41 @@ INPUT_USD_PER_MTOK: dict[str, float] = {
     "o3": 2.00,
 }
 
+# Cache-READ multiplier: what a provider charges for an input token served from
+# its prompt cache, as a fraction of the base input price. Applied to the frozen
+# (byte-stable) tool-schema block, which after the first turn is a cache hit on
+# every subsequent turn — so its real per-turn saving is (orig-comp) * rate * this,
+# not the full list price. Longest-prefix match, same as INPUT_USD_PER_MTOK.
+# (Turn 1 is actually a cache *write* at ~1.25x, so this slightly under-counts a
+# short session and converges to exact over a long one — conservative on purpose.)
+CACHE_READ_MULT: dict[str, float] = {
+    "claude": 0.1,      # Anthropic: cache read = 10% of base input
+    "gpt-5": 0.1,       # OpenAI cached input, per-model
+    "gpt-4.1": 0.25,
+    "gpt-4o": 0.5,
+    "o4": 0.25,
+    "o3": 0.25,
+}
+# Unknown model → assume the deepest discount (smallest saving) to avoid overstating.
+DEFAULT_CACHE_READ_MULT = 0.1
+
+# Cache-WRITE multiplier: the first turn a frozen prefix is cached costs a premium
+# over base input (Anthropic's 5-min cache write is 1.25x; OpenAI writes at base).
+# We use 1.25x — the Claude Code case, and the conservative (larger-write) end for
+# OpenAI. Applied once, to the first tool-bearing turn per model.
+CACHE_WRITE_MULT = 1.25
+
+
+def cache_read_multiplier(model: str) -> float:
+    """Fraction of base input price charged for a cached (prompt-cache read) token."""
+    m = _normalize(model)
+    best = None
+    for key in CACHE_READ_MULT:
+        if m.startswith(key) and (best is None or len(key) > len(best)):
+            best = key
+    return CACHE_READ_MULT[best] if best is not None else DEFAULT_CACHE_READ_MULT
+
+
 def _normalize(model: str) -> str:
     m = (model or "").strip().lower()
     if "/" in m:  # drop a provider namespace, e.g. "anthropic/claude-..."
