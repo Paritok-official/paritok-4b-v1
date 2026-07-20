@@ -552,6 +552,16 @@ def _compress_history(
 
     stats.history_turns_compressed = len(old_messages)
 
+    # Keeping only the recent turns can orphan a tool_result whose matching tool_use
+    # lived in an old turn we just folded into the summary. The Anthropic API rejects
+    # any tool_result without its tool_use in the preceding message ("unexpected
+    # tool_use_id ... Each tool_result block must have a corresponding tool_use block
+    # in the previous message"), which used to 400 the whole request once a tool-using
+    # session (Claude Code, Cursor) crossed the compression threshold. Demote such
+    # orphans to plain text — the tool output is preserved, only the dangling
+    # structural link is dropped. Pairs fully inside the recent window are untouched.
+    recent_messages = _demote_orphan_tool_results(recent_messages)
+
     # Replace old turns with summary + keep recent
     compressed_messages = [
         {"role": "user", "content": f"[Conversation Summary]\n{summary}"},
@@ -559,6 +569,60 @@ def _compress_history(
     ] + recent_messages
 
     return compressed_messages
+
+
+def _demote_orphan_tool_results(messages: list[dict]) -> list[dict]:
+    """Rewrite tool_result blocks whose tool_use is absent from `messages` into plain
+    text blocks, so the kept window is self-consistent for the Anthropic API.
+
+    A tool_result is an orphan when its tool_use_id is not produced by any tool_use in
+    this window (its tool_use was summarized away). Such a block is converted to a
+    ``{"type": "text", ...}`` block carrying the same output; well-paired results are
+    left exactly as-is.
+    """
+    available_tool_use_ids: set[str] = set()
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    available_tool_use_ids.add(block.get("id"))
+
+    def _result_text(block: dict) -> str:
+        content = block.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):  # array of content blocks (e.g. text/image)
+            return " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return ""
+
+    out: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        if msg.get("role") != "user" or not isinstance(content, list):
+            out.append(msg)
+            continue
+        has_orphan = any(
+            isinstance(b, dict) and b.get("type") == "tool_result"
+            and b.get("tool_use_id") not in available_tool_use_ids
+            for b in content
+        )
+        if not has_orphan:
+            out.append(msg)
+            continue
+        new_content = []
+        for b in content:
+            if (isinstance(b, dict) and b.get("type") == "tool_result"
+                    and b.get("tool_use_id") not in available_tool_use_ids):
+                new_content.append({"type": "text",
+                                    "text": f"[Earlier tool result]\n{_result_text(b)}"})
+            else:
+                new_content.append(b)
+        out.append({**msg, "content": new_content})
+    return out
 
 
 def _inject_virtual_tools(
