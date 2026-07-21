@@ -123,6 +123,21 @@ def _tool_params(t: dict) -> dict:
     return t.get("parameters") or t.get("input_schema") or {"type": "object", "properties": {}}
 
 
+def _openai_chat_url(base: str) -> str:
+    """Resolve the upstream Chat Completions URL from --openai-url.
+
+    Accepts either a base host (the standard `/v1/chat/completions` suffix is
+    appended — OpenAI `https://api.openai.com`, Groq `https://api.groq.com/openai`)
+    or a full endpoint that already ends in `/chat/completions`, used verbatim.
+    The latter covers providers whose OpenAI-compatible path isn't `{base}/v1/...`,
+    e.g. Gemini: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`.
+    """
+    base = base.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return f"{base}/v1/chat/completions"
+
+
 def _to_responses_tool(t: dict) -> dict:
     """Render one tool in the flat Responses shape.
 
@@ -195,18 +210,24 @@ def _is_numbered_line(line: str) -> bool:
 
 
 def _ensure_line_numbers(text: str) -> str:
-    """Add cat -n line numbers (`   N\\tline`) to unnumbered source code.
+    """Add line numbers (`N\\tline`) to unnumbered source code.
 
     codex reads files through the shell WITHOUT line numbers, which is
     out-of-distribution for the compressor: it barely compresses (~0.19) and keeps
     everything. Numbering it lets a codex file read compress like Claude's.
 
-    The format MUST be a tab (`\\d+\\t`), not the Read arrow (`\\d+→`): the compressor
-    chunks long files by `class`/`def` boundaries, and that boundary regex only
-    tolerates a tab-prefixed line number. Arrow-numbered lines match ZERO
-    boundaries, so a big file never chunks — it's sent as one oversized block that
-    the model truncates mid-function (dropping code). Tabs keep the chunker working:
-    a long file splits per function and every chunk survives intact (~0.63, whole).
+    Use the SAME shape Claude Code's Read tool emits — a bare line number then a tab
+    (`120\\tcode`), NOT a `cat -n`-style width-padded number (`   120\\tcode`). That's
+    what paritok-4B saw in training (real Claude Code trajectories), so it's the
+    in-distribution format; the leading padding spaces would otherwise add ~2 tokens
+    per line (~500 on a 300-line file) that the model has to read for nothing.
+
+    It MUST be a tab (`\\d+\\t`), not the Read arrow (`\\d+→`): the compressor chunks
+    long files by `class`/`def` boundaries, and that boundary regex only tolerates a
+    tab-prefixed line number. Arrow-numbered lines match ZERO boundaries, so a big
+    file never chunks — it's sent as one oversized block the model truncates
+    mid-function (dropping code). Tabs keep the chunker working: a long file splits
+    per function and every chunk survives intact (~0.63, whole).
 
     Left unchanged when the body isn't source code (logs/prose, no code signals) or
     is already numbered (tab OR arrow) — so we never corrupt non-file output.
@@ -217,7 +238,7 @@ def _ensure_line_numbers(text: str) -> str:
     sample = lines[:20]
     if sum(1 for ln in sample if _is_numbered_line(ln)) >= len(sample) * 0.6:
         return text  # already numbered (e.g. content that arrived Read-style)
-    return "".join(f"{i:6d}\t{ln}\n" for i, ln in enumerate(lines, 1))
+    return "".join(f"{i}\t{ln}\n" for i, ln in enumerate(lines, 1))
 
 
 def create_app(
@@ -420,7 +441,7 @@ def create_app(
 
         # Forward
         headers = _forward_headers(request)
-        url = f"{openai_base_url}/v1/chat/completions"
+        url = _openai_chat_url(openai_base_url)
         forward_body = parsed.to_dict()
 
         if parsed.stream:
@@ -867,6 +888,13 @@ def create_app(
                 reply = resp.json()
             except Exception:
                 return {"error": f"Upstream returned invalid JSON. Status: {resp.status_code}"}, 502, {}
+
+            # Relay upstream errors untouched instead of trying to resolve virtual
+            # tool calls on them. Some OpenAI-compatible providers return a non-dict
+            # body for errors (e.g. Gemini sends a top-level `[{"error": ...}]`), which
+            # would otherwise crash the parser below.
+            if resp.status_code >= 400 or not isinstance(reply, dict):
+                return reply, resp.status_code, _relay_headers(resp)
 
             pending = oai_adapter.find_virtual_tool_calls(reply)
             if not pending:

@@ -254,6 +254,27 @@ Keep your real provider API key set as usual (`ANTHROPIC_API_KEY` / `OPENAI_API_
 
 > **Codex is the exception — it does *not* read `OPENAI_BASE_URL`.** The Codex CLI takes its endpoint from `~/.codex/config.toml`, not an env var, so the line above silently has no effect for it. See [Codex setup](#codex-cli) just below.
 
+#### Any OpenAI-compatible upstream (Groq, Gemini, …)
+
+The compressor is independent of the upstream LLM — it runs locally on the Paritok
+4B model (or the GPU server), so you can point the OpenAI path at **any**
+OpenAI-Chat-Completions-compatible endpoint with `--openai-url`. Your agent sends its
+provider key as usual; the proxy forwards it.
+
+```bash
+# Groq — base host; the proxy appends /v1/chat/completions
+paritok proxy --openai-url https://api.groq.com/openai
+#   -> https://api.groq.com/openai/v1/chat/completions
+
+# Gemini — its OpenAI-compat path isn't {base}/v1/..., so pass the FULL endpoint
+paritok proxy --openai-url https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+```
+
+`--openai-url` accepts either a base host (standard `/v1/chat/completions` is appended)
+or a full endpoint already ending in `/chat/completions` (used verbatim). Then point your
+OpenAI-SDK agent at the proxy (`OPENAI_BASE_URL=http://127.0.0.1:8080`), set
+`OPENAI_API_KEY` to the provider's key, and use that provider's model names.
+
 #### Codex CLI
 
 Codex ignores `OPENAI_BASE_URL` — it only reads its endpoint from `~/.codex/config.toml`. So Paritok writes that file for you. Flip one switch in `paritok.yaml` and paste your key:

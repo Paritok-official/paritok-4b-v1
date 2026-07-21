@@ -94,6 +94,8 @@ def find_virtual_tool_calls(response_body: dict) -> list[dict]:
     # NOTE: tc["function"]["arguments"] is a JSON string, not a dict.
     # Caller must json.loads() it before passing to resolve_virtual_call().
     results = []
+    if not isinstance(response_body, dict):  # some providers return non-dict error bodies
+        return results
     for choice in response_body.get("choices", []):
         message = choice.get("message", {})
         for tc in message.get("tool_calls", []):
