@@ -47,7 +47,8 @@ class ProxyStats:
         #   FIRST tool-bearing turn is a cache WRITE (~1.25x) and every turn after is
         #   a cache READ (~0.1x). We split it so each side gets its true multiplier:
         #   tools_first_* = that first turn; tools_rest_* = all subsequent turns.
-        return {"content_orig": 0, "content_comp": 0,
+        return {"content_first_orig": 0, "content_first_comp": 0,
+                "content_rest_orig": 0, "content_rest_comp": 0,
                 "tools_first_orig": 0, "tools_first_comp": 0,
                 "tools_rest_orig": 0, "tools_rest_comp": 0}
 
@@ -64,8 +65,13 @@ class ProxyStats:
         self.total_original_tokens += orig
         self.total_compressed_tokens += comp
         bucket = self.by_model.setdefault(model or "unknown", self._new_bucket())
-        bucket["content_orig"] += stats.original_tokens
-        bucket["content_comp"] += stats.compressed_tokens
+        # Content (tool results / file reads / old history) is re-sent inside the
+        # cacheable prefix every turn just like the tool block, so it's a cache WRITE
+        # the first turn and a cache READ afterwards — price it the same way, not at
+        # full list price. (First request per model = write; the rest = reads.)
+        cslot = "first" if bucket["content_first_orig"] == 0 else "rest"
+        bucket[f"content_{cslot}_orig"] += stats.original_tokens
+        bucket[f"content_{cslot}_comp"] += stats.compressed_tokens
         if tools_original_tokens > 0:
             # First tool-bearing turn for this model = the cache write; rest = reads.
             slot = "first" if bucket["tools_first_orig"] == 0 else "rest"
@@ -89,10 +95,12 @@ class ProxyStats:
         total = 0.0
         for m, b in self.by_model.items():
             rate = input_price_per_token(m)
-            content_saved = (b["content_orig"] - b["content_comp"]) * rate
+            cr = cache_read_multiplier(m)
+            content_write = (b["content_first_orig"] - b["content_first_comp"]) * rate * CACHE_WRITE_MULT
+            content_read = (b["content_rest_orig"] - b["content_rest_comp"]) * rate * cr
             tools_write = (b["tools_first_orig"] - b["tools_first_comp"]) * rate * CACHE_WRITE_MULT
-            tools_read = (b["tools_rest_orig"] - b["tools_rest_comp"]) * rate * cache_read_multiplier(m)
-            total += content_saved + tools_write + tools_read
+            tools_read = (b["tools_rest_orig"] - b["tools_rest_comp"]) * rate * cr
+            total += content_write + content_read + tools_write + tools_read
         return round(total, 4)
 
     def snapshot(self) -> dict:
@@ -104,6 +112,7 @@ class ProxyStats:
             "input_tokens_compressed": comp,
             "compression_ratio": round(comp / orig, 3) if orig else 0.0,
             "tokens_saved": self.total_saved_tokens,
+            "tools_filtered": self.total_tools_filtered,
             "estimated_cost_saved_usd": f"${self.estimated_cost_saved_usd:.2f}",
         }
 
