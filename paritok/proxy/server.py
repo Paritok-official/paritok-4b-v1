@@ -140,6 +140,81 @@ def _to_responses_tool(t: dict) -> dict:
             "description": t.get("description", ""), "parameters": _tool_params(t)}
 
 
+# Header lines codex prepends when it reads a file through the shell: a
+# command-output frame (Exit code / Wall time / Total output lines / Output:).
+# Those extra lines tip classify_kind_from_content over its log_output line-count
+# heuristic, so a *source file* gets the aggressive "other" prompt that drops the
+# code and hallucinates. We only strip this exact frame; nothing else is touched.
+_CODEX_OUTPUT_HEADER_PREFIXES = (
+    "Exit code:", "Wall time:", "Total output lines:", "Output:",
+)
+
+
+def _split_codex_header(content: str) -> tuple[str, str]:
+    """Split codex's shell command-output header from the real body it wraps.
+
+    codex runs file reads (and commands) through the shell, prefixing the actual
+    output with the frame above. Compressing that frame together with the body
+    feeds the model something no other agent sends — Claude/OpenAI hand over the
+    raw tool output — which skews the kind sniff and the compressed result (e.g.
+    a source file mistaken for log_output and summarized away). We split the frame
+    off so ONLY the body is compressed, identical to what every other agent feeds
+    the model, and re-attach the header verbatim afterwards.
+
+    Returns (header, body). header is "" when there is no codex frame, leaving the
+    content untouched — so unwrapped content and the Claude/OpenAI paths are
+    completely unaffected.
+    """
+    lines = content.splitlines(keepends=True)
+    i, saw_header = 0, False
+    while i < len(lines) and (
+        not lines[i].strip() or lines[i].startswith(_CODEX_OUTPUT_HEADER_PREFIXES)
+    ):
+        if lines[i].startswith(_CODEX_OUTPUT_HEADER_PREFIXES):
+            saw_header = True
+        i += 1
+    if not saw_header:
+        return "", content
+    return "".join(lines[:i]), "".join(lines[i:])
+
+
+def _has_code_signals(text: str) -> bool:
+    """A few strong, code-specific tokens present at least twice — enough to tell a
+    real source file from prose/log output."""
+    return sum(text.count(k) for k in ("def ", "class ", "import ", "return ", "self.")) >= 2
+
+
+def _is_numbered_line(line: str) -> bool:
+    """True if `line` starts (after indent) with digits then a tab or Read's arrow —
+    i.e. it already carries a cat -n / Read line-number prefix."""
+    s = line.lstrip()
+    j = 0
+    while j < len(s) and s[j].isdigit():
+        j += 1
+    return j > 0 and j < len(s) and s[j] in ("\t", "→")
+
+
+def _ensure_line_numbers(text: str) -> str:
+    """Add Claude-Read-style line numbers (`   N→line`) to unnumbered source code.
+
+    codex reads files through the shell WITHOUT line numbers, but the compressor was
+    trained on Claude Code's Read output, which prefixes each line `<num>→`. Feeding
+    it unnumbered source is out-of-distribution: it barely compresses (~0.19) and
+    keeps everything. Numbering it in the SAME format makes a codex file read behave
+    exactly like Claude's — it compresses hard (~0.80) AND honors the intent (drops
+    unrelated functions). The arrow format matters: cat -n tabs only reach ~0.54 and
+    keep more. Left unchanged when the body isn't source code (logs/prose, no code
+    signals) or is already numbered — so we never corrupt non-file output.
+    """
+    lines = text.splitlines()
+    if len(lines) < 4 or not _has_code_signals(text):
+        return text
+    sample = lines[:20]
+    if sum(1 for ln in sample if _is_numbered_line(ln)) >= len(sample) * 0.6:
+        return text  # already numbered (e.g. content that arrived Read-style)
+    return "".join(f"{i:6d}→{ln}\n" for i, ln in enumerate(lines, 1))
+
+
 def create_app(
     anthropic_base_url: str = "https://api.anthropic.com",
     openai_base_url: str = "https://api.openai.com",
@@ -382,10 +457,22 @@ def create_app(
         for i, item in enumerate(input_items):
             if (item.get("type") == "function_call_output"
                     and isinstance(item.get("output"), str) and item["output"].strip()):
-                cr = engine.pipeline.compress(item["output"], query=query,
+                # codex wraps output in a shell command-output header. Compress only
+                # the body — byte-identical to what every other agent feeds the model
+                # — then re-attach the header, so the same content compresses the same
+                # way regardless of which agent produced it. (Name the local var
+                # `seg_body`, not `body`: `body` is the request dict used below.)
+                header, seg_body = _split_codex_header(item["output"])
+                # codex reads files without line numbers (out-of-distribution for the
+                # compressor). Feed the model a line-numbered form so it compresses
+                # like every other agent's Read output, but keep `seg_body` (the real,
+                # unnumbered content) as `content` so the ratio, stats and expand all
+                # reflect what the agent actually sent — not the numbering we injected.
+                cr = engine.pipeline.compress(seg_body, query=query,
+                                              model_input=_ensure_line_numbers(seg_body),
                                               upstream_model=parsed.model)
                 if not cr.metadata.get("skipped"):
-                    input_items[i] = {**item, "output": cr.compressed}
+                    input_items[i] = {**item, "output": header + cr.compressed}
                     stats.original_tokens += cr.original_tokens
                     stats.compressed_tokens += cr.compressed_tokens
                     stats.items_compressed += 1
