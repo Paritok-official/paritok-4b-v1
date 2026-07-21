@@ -114,6 +114,21 @@ def _tool_params(t: dict) -> dict:
     return t.get("parameters") or t.get("input_schema") or {"type": "object", "properties": {}}
 
 
+def _openai_chat_url(base: str) -> str:
+    """Resolve the upstream Chat Completions URL from --openai-url.
+
+    Accepts either a base host (the standard `/v1/chat/completions` suffix is
+    appended — OpenAI `https://api.openai.com`, Groq `https://api.groq.com/openai`)
+    or a full endpoint that already ends in `/chat/completions`, used verbatim.
+    The latter covers providers whose OpenAI-compatible path isn't `{base}/v1/...`,
+    e.g. Gemini: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`.
+    """
+    base = base.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return f"{base}/v1/chat/completions"
+
+
 def create_app(
     anthropic_base_url: str = "https://api.anthropic.com",
     openai_base_url: str = "https://api.openai.com",
@@ -314,7 +329,7 @@ def create_app(
 
         # Forward
         headers = _forward_headers(request)
-        url = f"{openai_base_url}/v1/chat/completions"
+        url = _openai_chat_url(openai_base_url)
         forward_body = parsed.to_dict()
 
         if parsed.stream:
@@ -753,6 +768,13 @@ def create_app(
                 reply = resp.json()
             except Exception:
                 return {"error": f"Upstream returned invalid JSON. Status: {resp.status_code}"}, 502, {}
+
+            # Relay upstream errors untouched instead of trying to resolve virtual
+            # tool calls on them. Some OpenAI-compatible providers return a non-dict
+            # body for errors (e.g. Gemini sends a top-level `[{"error": ...}]`), which
+            # would otherwise crash the parser below.
+            if resp.status_code >= 400 or not isinstance(reply, dict):
+                return reply, resp.status_code, _relay_headers(resp)
 
             pending = oai_adapter.find_virtual_tool_calls(reply)
             if not pending:
