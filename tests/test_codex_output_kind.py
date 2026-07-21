@@ -69,15 +69,17 @@ from paritok.proxy.server import _ensure_line_numbers  # noqa: E402
 
 
 def test_unnumbered_source_gets_tab_numbering():
-    # cat -n style: `<num>\tline`. MUST be tab, not arrow — the chunker's
-    # class/def boundary regex only tolerates a tab-prefixed line number, so arrow
-    # numbering would break chunking on big files and truncate mid-function.
+    # Claude Read style: bare `<num>\tline` (NOT width-padded `   <num>\t` cat -n —
+    # the padding spaces are wasted tokens and out-of-distribution). MUST be tab, not
+    # arrow — the chunker's class/def boundary regex only tolerates a tab-prefixed
+    # line number, so arrow numbering would break chunking and truncate mid-function.
     src = "import os\n\n\ndef f():\n    return os.getcwd()\n"
     out = _ensure_line_numbers(src)
     lines = out.splitlines()
-    assert lines[0] == f"{1:6d}\timport os"
-    assert lines[3] == f"{4:6d}\tdef f():"
+    assert lines[0] == "1\timport os"
+    assert lines[3] == "4\tdef f():"
     assert "→" not in out  # never the arrow format
+    assert not lines[0].startswith(" ")  # bare number, no cat -n padding
     # every original line is preserved, just prefixed
     assert "def f():" in out and "return os.getcwd()" in out
 
