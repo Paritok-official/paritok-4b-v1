@@ -13,3 +13,21 @@ jobs:
           pip install ruff
       - name: Lint
         run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Tests only need the package + the proxy's HTTP layer (starlette/httpx).
+      # sentence-transformers/torch are lazy-imported and never hit by the suite,
+      # so we keep CI light and fast by not installing them.
+      - name: Install
+        run: pip install -e . pytest starlette
+      - name: Run tests
+        run: pytest -q

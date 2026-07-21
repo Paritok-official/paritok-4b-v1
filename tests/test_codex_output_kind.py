@@ -68,18 +68,23 @@ def test_no_false_header_on_prose_starting_with_output_word():
 from paritok.proxy.server import _ensure_line_numbers  # noqa: E402
 
 
-def test_unnumbered_source_gets_arrow_numbering():
-    # Claude-Read style: `<num>→line` (the format the model was trained on)
+def test_unnumbered_source_gets_tab_numbering():
+    # cat -n style: `<num>\tline`. MUST be tab, not arrow — the chunker's
+    # class/def boundary regex only tolerates a tab-prefixed line number, so arrow
+    # numbering would break chunking on big files and truncate mid-function.
     src = "import os\n\n\ndef f():\n    return os.getcwd()\n"
     out = _ensure_line_numbers(src)
     lines = out.splitlines()
-    assert lines[0] == f"{1:6d}→import os"
-    assert lines[3] == f"{4:6d}→def f():"
+    assert lines[0] == f"{1:6d}\timport os"
+    assert lines[3] == f"{4:6d}\tdef f():"
+    assert "→" not in out  # never the arrow format
     # every original line is preserved, just prefixed
     assert "def f():" in out and "return os.getcwd()" in out
 
 
 def test_already_arrow_numbered_source_left_alone():
+    # arrow-numbered content (e.g. it really arrived from Claude's Read) is still
+    # recognized as already-numbered and passed through untouched, not re-numbered.
     numbered = "".join(f"{i:6d}→{ln}\n" for i, ln in enumerate(
         ["import os", "def f():", "    return 1", "x = f()"], 1))
     assert _ensure_line_numbers(numbered) == numbered

@@ -210,16 +210,21 @@ def _is_numbered_line(line: str) -> bool:
 
 
 def _ensure_line_numbers(text: str) -> str:
-    """Add Claude-Read-style line numbers (`   N→line`) to unnumbered source code.
+    """Add cat -n line numbers (`   N\\tline`) to unnumbered source code.
 
-    codex reads files through the shell WITHOUT line numbers, but the compressor was
-    trained on Claude Code's Read output, which prefixes each line `<num>→`. Feeding
-    it unnumbered source is out-of-distribution: it barely compresses (~0.19) and
-    keeps everything. Numbering it in the SAME format makes a codex file read behave
-    exactly like Claude's — it compresses hard (~0.80) AND honors the intent (drops
-    unrelated functions). The arrow format matters: cat -n tabs only reach ~0.54 and
-    keep more. Left unchanged when the body isn't source code (logs/prose, no code
-    signals) or is already numbered — so we never corrupt non-file output.
+    codex reads files through the shell WITHOUT line numbers, which is
+    out-of-distribution for the compressor: it barely compresses (~0.19) and keeps
+    everything. Numbering it lets a codex file read compress like Claude's.
+
+    The format MUST be a tab (`\\d+\\t`), not the Read arrow (`\\d+→`): the compressor
+    chunks long files by `class`/`def` boundaries, and that boundary regex only
+    tolerates a tab-prefixed line number. Arrow-numbered lines match ZERO
+    boundaries, so a big file never chunks — it's sent as one oversized block that
+    the model truncates mid-function (dropping code). Tabs keep the chunker working:
+    a long file splits per function and every chunk survives intact (~0.63, whole).
+
+    Left unchanged when the body isn't source code (logs/prose, no code signals) or
+    is already numbered (tab OR arrow) — so we never corrupt non-file output.
     """
     lines = text.splitlines()
     if len(lines) < 4 or not _has_code_signals(text):
@@ -227,7 +232,7 @@ def _ensure_line_numbers(text: str) -> str:
     sample = lines[:20]
     if sum(1 for ln in sample if _is_numbered_line(ln)) >= len(sample) * 0.6:
         return text  # already numbered (e.g. content that arrived Read-style)
-    return "".join(f"{i:6d}→{ln}\n" for i, ln in enumerate(lines, 1))
+    return "".join(f"{i:6d}\t{ln}\n" for i, ln in enumerate(lines, 1))
 
 
 def create_app(
