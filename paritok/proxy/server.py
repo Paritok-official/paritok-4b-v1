@@ -123,6 +123,23 @@ def _tool_params(t: dict) -> dict:
     return t.get("parameters") or t.get("input_schema") or {"type": "object", "properties": {}}
 
 
+def _to_responses_tool(t: dict) -> dict:
+    """Render one tool in the flat Responses shape.
+
+    Codex sends more than function tools: the Responses API also carries built-in
+    and custom tools like `{"type":"local_shell"}`, `web_search`, `custom`, `mcp`,
+    etc., which have no `name` field. Only function tools (incl. our injected
+    virtual ones, which use the Anthropic `name`/`input_schema` shape) get rebuilt
+    as `{"type":"function","name",...,"parameters"}`; anything else is forwarded
+    verbatim so we don't stamp a null `name` onto it.
+    """
+    ttype = t.get("type")
+    if ttype not in (None, "function") or not t.get("name"):
+        return t
+    return {"type": "function", "name": t.get("name"),
+            "description": t.get("description", ""), "parameters": _tool_params(t)}
+
+
 def create_app(
     anthropic_base_url: str = "https://api.anthropic.com",
     openai_base_url: str = "https://api.openai.com",
@@ -380,11 +397,7 @@ def create_app(
                 has_compressed=stats.items_compressed > 0,
                 has_filtered=stats.tools_kept < stats.tools_original,
             )
-            parsed.tools = [
-                {"type": "function", "name": t.get("name"),
-                 "description": t.get("description", ""), "parameters": _tool_params(t)}
-                for t in tools
-            ]
+            parsed.tools = [_to_responses_tool(t) for t in tools]
         parsed.input = input_items
 
         tools_orig_tok = _tools_tokens(raw_tools)
