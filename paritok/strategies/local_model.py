@@ -76,6 +76,10 @@ _MIN_NUM_PREDICT = 256
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 # Unwrap the model's [SEG ...]<body>[/SEG] reply. DOTALL so bodies span lines.
 _SEG_RE = re.compile(r"\[SEG\b[^\]]*\]\s*(.*?)\s*\[/SEG\]", re.DOTALL)
+# Stray SEG tags, used to scrub a half-wrapped reply (opening tag but the closing
+# one truncated by num_predict, or vice versa) so the marker never leaks.
+_SEG_OPEN_RE = re.compile(r"\[SEG\b[^\]]*\]")
+_SEG_CLOSE_RE = re.compile(r"\[/SEG\]")
 
 
 def _ratio_to_level(target_ratio: str) -> str:
@@ -108,7 +112,12 @@ def _unwrap_seg(raw: str) -> str:
     """
     text = _strip_thinking(raw)
     m = _SEG_RE.search(text)
-    return (m.group(1) if m else text).strip()
+    if m:
+        return m.group(1).strip()
+    # No well-formed [SEG]...[/SEG] pair: the model emitted an opening tag but the
+    # closing one was truncated (a long body hitting num_predict), or vice versa.
+    # Scrub any stray SEG tags so the marker never leaks into the compressed output.
+    return _SEG_CLOSE_RE.sub("", _SEG_OPEN_RE.sub("", text)).strip()
 
 
 class LocalModelStrategy:

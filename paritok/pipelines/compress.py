@@ -133,11 +133,20 @@ class CompressionPipeline:
         target_ratio: str | None = None,
         source: str | None = None,
         upstream_model: str | None = None,
+        model_input: str | None = None,
     ) -> CompressionResult:
         """Compress content via the local SEG model.
 
         Args:
             content: Text to compress (tool output, conversation history, etc.)
+                Used for token counting, caching, shadow storage and the ratio —
+                i.e. what the agent actually sent.
+            model_input: Alternate text to FEED THE MODEL, when it should see a
+                different form than `content` — e.g. codex's unnumbered source
+                line-numbered so it's in-distribution. `content` still drives
+                original_tokens / hash / store / expand, so the ratio reflects the
+                real saving and `expand_context` returns the true original.
+                Defaults to `content`.
             query: USER INTENT — the agent's current task. Drives keep/drop.
             level: SEG level L0-L3 (target ratio). Defaults to the model default (L0).
             kind: SEG kind (file_read, log_output, ...). If None, sniffed from content.
@@ -209,9 +218,10 @@ class CompressionPipeline:
                 metadata={"cache_hit": True},
             )
 
-        # 5. Call model (SEG protocol: intent + kind + level)
+        # 5. Call model (SEG protocol: intent + kind + level). Feed model_input when
+        # given (e.g. line-numbered form) — content still governs everything else.
         compressed = self._model.compress(
-            content,
+            model_input if model_input is not None else content,
             query=query,
             level=level,
             kind=kind,

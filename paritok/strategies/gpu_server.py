@@ -114,7 +114,13 @@ class GpuServerStrategy:
             # original back. Keep the original; no compression happened.
             return content
         compressed = data.get("compressed")
-        return compressed if isinstance(compressed, str) else content
+        if not isinstance(compressed, str):
+            return content
+        # Defensive: the hosted server already unwraps SEG tags, but a truncated
+        # closing tag can leak a stray opening [SEG ...] marker. Re-unwrap here so
+        # the proxy's output is clean and identical regardless of that hiccup.
+        from paritok.strategies.local_model import _unwrap_seg
+        return _unwrap_seg(compressed)
 
     def check(self) -> tuple[bool, str]:
         """Probe {base_url}/test. Returns (available, message).
