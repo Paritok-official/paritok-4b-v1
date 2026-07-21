@@ -621,22 +621,45 @@ def create_app(
         return StreamingResponse(_emit_once(payload), media_type="text/event-stream",
                                  status_code=status, headers=_STREAM_HEADERS)
 
+    async def _collect_stream(url, headers, body) -> tuple[bytearray, int]:
+        """POST a streaming request and buffer the whole SSE body into memory.
+
+        Retries ONCE on httpx.RemoteProtocolError ("Server disconnected without
+        sending a response") — a transient upstream drop that clears on retry (the
+        very next request typically succeeds). ConnectError / TimeoutException and a
+        second RemoteProtocolError propagate to the caller, which maps them to a
+        clean 5xx instead of an unhandled 500."""
+        last_exc: httpx.RemoteProtocolError | None = None
+        for attempt in range(2):
+            collected = bytearray()
+            try:
+                async with http_client.stream("POST", url, headers=headers,
+                                              json={**body, "stream": True}) as resp:
+                    status = resp.status_code
+                    async for piece in resp.aiter_bytes():
+                        collected.extend(piece)
+                return collected, status
+            except httpx.RemoteProtocolError as e:
+                last_exc = e  # transient: retry once, then give up
+        raise last_exc
+
     async def _stream_anthropic(url, headers, body, stubbed_tools):
         """Pull the upstream stream into memory. With no virtual tool call present,
         hand the exact bytes to the client. Otherwise re-run non-streaming, resolve,
         and rebuild the event stream from the finished message."""
-        collected = bytearray()
-        status = 200
         try:
-            async with http_client.stream("POST", url, headers=headers,
-                                          json={**body, "stream": True}) as resp:
-                status = resp.status_code
-                async for piece in resp.aiter_bytes():
-                    collected.extend(piece)
+            collected, status = await _collect_stream(url, headers, body)
         except httpx.ConnectError as e:
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        except httpx.HTTPError as e:
+            # Includes RemoteProtocolError ("Server disconnected without sending a
+            # response") — a transient upstream drop mid/pre-stream that would
+            # otherwise surface as an unhandled 500. Degrade to a clean 502.
+            return JSONResponse(
+                content={"error": f"Upstream stream failed: {type(e).__name__}: {e}"},
+                status_code=502)
 
         raw = bytes(collected)
         if not any(marker in raw for marker in _VIRTUAL_MARKERS):
@@ -842,18 +865,19 @@ def create_app(
         """Pull the upstream stream into memory. With no virtual tool call present,
         hand the exact bytes to the client. Otherwise re-run non-streaming, resolve,
         and rebuild the chunk stream from the finished completion."""
-        collected = bytearray()
-        status = 200
         try:
-            async with http_client.stream("POST", url, headers=headers,
-                                          json={**body, "stream": True}) as resp:
-                status = resp.status_code
-                async for piece in resp.aiter_bytes():
-                    collected.extend(piece)
+            collected, status = await _collect_stream(url, headers, body)
         except httpx.ConnectError as e:
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        except httpx.HTTPError as e:
+            # Includes RemoteProtocolError ("Server disconnected without sending a
+            # response") — a transient upstream drop mid/pre-stream that would
+            # otherwise surface as an unhandled 500. Degrade to a clean 502.
+            return JSONResponse(
+                content={"error": f"Upstream stream failed: {type(e).__name__}: {e}"},
+                status_code=502)
 
         raw = bytes(collected)
         if not any(marker in raw for marker in _VIRTUAL_MARKERS):
@@ -1032,18 +1056,19 @@ def create_app(
         `expand_context`/`gateway_search_tools` name appears in the bytes even
         when nothing was called), which would send every request down the
         rebuild path."""
-        collected = bytearray()
-        status = 200
         try:
-            async with http_client.stream("POST", url, headers=headers,
-                                          json={**body, "stream": True}) as resp:
-                status = resp.status_code
-                async for piece in resp.aiter_bytes():
-                    collected.extend(piece)
+            collected, status = await _collect_stream(url, headers, body)
         except httpx.ConnectError as e:
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        except httpx.HTTPError as e:
+            # Includes RemoteProtocolError ("Server disconnected without sending a
+            # response") — a transient upstream drop mid/pre-stream that would
+            # otherwise surface as an unhandled 500. Degrade to a clean 502.
+            return JSONResponse(
+                content={"error": f"Upstream stream failed: {type(e).__name__}: {e}"},
+                status_code=502)
 
         raw = bytes(collected)
         final = _final_response_from_sse(raw)
