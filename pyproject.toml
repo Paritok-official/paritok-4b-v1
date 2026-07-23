@@ -50,6 +50,12 @@ packages = ["paritok"]
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint]
+# Pin the active rule set so a newer ruff release that turns on extra rules by
+# default (0.16 began surfacing RUF/SIM/BLE) can't fail CI on unrelated code.
+# E4/E7/E9 + F = pycodestyle errors + pyflakes — ruff's long-standing default.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.ruff.lint.per-file-ignores]
 # data_pipeline/ is one-off research/data tooling (its .jsonl output is
 # gitignored and regenerable), so a few stylistic rules are relaxed there
