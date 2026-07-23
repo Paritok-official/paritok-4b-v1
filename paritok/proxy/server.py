@@ -1225,10 +1225,13 @@ def _preflight_backend(config_path: str | None) -> None:
 
         available, message = GpuServerStrategy(config.gpu_server).check()
         if available:
-            print(f"[paritok] Hosted GPU server OK ({config.gpu_server.base_url}).")
+            print(f"[paritok] Hosted GPU server OK — API key accepted "
+                  f"({config.gpu_server.base_url}).")
             return
         print("\n" + "=" * 70)
-        print("[paritok] WARNING: the hosted compression server is not reachable.")
+        # `available` is false either because the key was rejected or the endpoint
+        # is unreachable; `message` (from check()) says which — surface it verbatim.
+        print("[paritok] WARNING: hosted compression is not available.")
         print(f"  {message}")
         print("  If you keep going, requests will NOT be compressed (passed through as-is).")
         print("  To compress, self-host the open model instead:")
