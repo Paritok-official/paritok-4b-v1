@@ -5,7 +5,6 @@ compress(), distinguishes 401/403 (key) from other failures, and parses JSON
 defensively.
 """
 import httpx
-import pytest
 
 from paritok.config import GpuServerConfig
 from paritok.strategies.gpu_server import GpuServerStrategy
