@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from paritok.config import ParitokConfig
 from paritok.storage import ShadowStorage, MemoryShadowStorage, content_hash
 from paritok.strategies.local_model import LocalModelStrategy
-from paritok.token_counter import count_tokens
+from paritok.token_counter import _DEFAULT_ENCODING, count_tokens
 
 _REF_PATTERN = re.compile(r"^\[REF:[a-f0-9]+(?:\s+src=[^\]]*)?\]")
 
@@ -159,7 +159,11 @@ class CompressionPipeline:
                 re-invoking the local model.
         """
         cfg = self.config.compression
-        original_tokens = count_tokens(content)
+        # Count with the UPSTREAM model's tokenizer (o200k for gpt-5/4.1/o3, ...)
+        # so original/compressed token counts — and the savings the dashboard bills
+        # on — match the provider's actual billing tokenizer, not a cl100k estimate.
+        enc = upstream_model or _DEFAULT_ENCODING
+        original_tokens = count_tokens(content, enc)
         t0 = time.time()
 
         # 1. Already-compressed check
@@ -181,7 +185,7 @@ class CompressionPipeline:
                     if norm_new and (
                         norm_new == norm_prior or norm_new in norm_prior
                     ):
-                        compressed_tokens = count_tokens(cached_tag)
+                        compressed_tokens = count_tokens(cached_tag, enc)
                         return CompressionResult(
                             compressed=cached_tag,
                             original_tokens=original_tokens,
@@ -209,7 +213,7 @@ class CompressionPipeline:
         if cached is not None:
             if source:
                 self.storage.set_shadow_for_path(source, sid)
-            compressed_tokens = count_tokens(cached)
+            compressed_tokens = count_tokens(cached, enc)
             return CompressionResult(
                 compressed=cached,
                 original_tokens=original_tokens,
@@ -230,7 +234,7 @@ class CompressionPipeline:
         )
 
         # 6. Effectiveness check
-        compressed_tokens = count_tokens(compressed)
+        compressed_tokens = count_tokens(compressed, enc)
         savings_ratio = 1 - compressed_tokens / original_tokens if original_tokens > 0 else 0
         if savings_ratio < cfg.refusal_threshold:
             return self._skip(content, original_tokens, "below_refusal_threshold")
@@ -245,7 +249,7 @@ class CompressionPipeline:
             tagged = f"[REF:{sid}] {compressed}"
         self.storage.cache_compressed(sid, tagged)
 
-        tagged_tokens = count_tokens(tagged)
+        tagged_tokens = count_tokens(tagged, enc)
 
         self._debug_dump({
             "ts": round(time.time(), 3),
