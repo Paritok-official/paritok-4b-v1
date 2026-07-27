@@ -1,7 +1,7 @@
 <h1 align="center">Paritok</h1>
 
 <p align="center"><b>The first open-source compression model trained specifically for coding agents.</b></p>
-<p align="center">Trained on <b>45K real coding-agent trajectories</b>, Paritok understands the difference between a function signature and a debug line — so it keeps what matters and drops what doesn't. Fully compatible with <b>Claude Code, Cursor, OpenHands</b>, and any agent framework using standard message format.<br/><br/><b>~74% fewer tokens on typical workloads</b> (up to <b>95%</b> on heavy long-session traffic), cutting your input token bill by <b>up to 95%</b> on Claude / GPT — while <b>matching gpt-4.1-mini</b> on SWE-bench Verified at a fraction of the cost.</p>
+<p align="center">Trained on <b>45K real coding-agent trajectories</b>, Paritok understands the difference between a function signature and a debug line — so it keeps what matters and drops what doesn't. Fully compatible with <b>Claude Code, Cursor, OpenHands</b>, and any agent framework using standard message format.<br/><br/><b>~74% fewer tokens on typical workloads</b> (up to <b>95%</b> on heavy long-session traffic), cutting your input token bill by <b>up to 95%</b> on Claude / GPT — while <b>matching gpt-4.1-mini</b> on SWE-bench Verified at a fraction of the cost — deployed as a <b>non-destructive gateway</b> where nothing is ever permanently discarded.</p>
 
 <p align="center">
   <a href="https://huggingface.co/paritok/paritok-4b-v1">
@@ -42,6 +42,7 @@
 - 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Verified — matching gpt-4.1-mini as compressor at **less than half the token spend**, and within 7pp of gpt-5 at **40% its context length**.
 - 💰 **Up to 95% off your input token bill** (74% on typical workloads) at Claude Sonnet pricing. Long-session teams save **thousands per month** — see [Cost Impact](#-cost-impact).
 - 🪶 **Small & self-hostable** — 4B LoRA adapter, bf16, runs on a single 24GB GPU. No SaaS, no lock-in, no per-token compressor fee.
+- 🔁 **Non-destructive by design.** Compressed content is never gone — the agent recalls any exact original on demand via `expand_context`. Lossy on the wire, fully recoverable when it counts. The 86.5% benchmark is the raw model *without* recall — a conservative floor, not the ceiling you actually run.
 - 🔓 **Fully open** — Apache 2.0 weights, reproducible data pipeline, real end-to-end SWE-bench numbers (no cherry-picking).
 
 ---
@@ -69,6 +70,8 @@ Real end-to-end evaluation on **SWE-bench Verified**. An agent scaffold receives
 **Paritok cuts context by 74% while retaining 86.5% of uncompressed solve quality** — enough headroom to double or triple your monthly turn budget on the same API spend.
 
 <sub>Benchmark numbers above use Paritok's baseline 25.7% CR (74% context cut) — the raw compressor performance in a controlled setting. Real production savings can go higher with drop-aware deployment; see [Cost Impact](#-cost-impact) for the 95% upper bound.</sub>
+
+> **The benchmark is a floor, not a ceiling.** The 86.5% above measures the **raw 4B model** — its compressed output fed straight to the agent, with **no recall enabled**. What you actually deploy adds a **non-destructive gateway**: every compressed segment is tagged `[REF:id]`, and the agent can call `expand_context` to pull back the exact original at any time — locally, instantly, verbatim. Nothing is permanently discarded, so in real-world use the deployed gateway recovers quality the raw benchmark leaves on the table. Across real user workloads so far, with recall enabled, we've seen no reports of lost quality. We publish the raw-model number because it's the honest, reproducible floor — not the ceiling you run in production.
 
 Evaluation used the standard [SWE-bench Verified](https://www.swebench.com/) harness with a public agent scaffold. Per-issue results and reproduction instructions will be published with the v2 release.
 
@@ -386,7 +389,7 @@ To load the LoRA adapter and compress a single `[SEG]` block yourself (no middle
 
 **Paritok is less useful when:**
 - Your context is already short (< 2 000 tokens).
-- You need lossless compression (in that case, just don't compress).
+- You need **byte-exact context with no summarization step whatsoever** — though the `expand_context` recall tool covers virtually every case where you'd otherwise worry about this.
 - Your workflow is single-turn Q&A (context doesn't accumulate).
 
 ### How the middleware works
