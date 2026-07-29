@@ -6,16 +6,14 @@ already labelled with a `kind` (file_read, log_output, file_operation, ...) and 
 same labelling so train/inference distributions match — the model never guesses
 kind/level itself.
 
-Ported verbatim (minus training-only deps: orjson/tqdm/must_keep spans) from the
-training repo's `02_parse_trajectories.py::classify_segment_kind` and
-`04_label.py::{reclassify_tool_result, detect_stale_files, assign_level}`.
+Ported (minus training-only deps: orjson/tqdm/must_keep spans) from the training
+repo's `04_label.py::{reclassify_tool_result, detect_stale_files, assign_level}`.
 
-Two entry points:
-  - tag_messages(messages): full-conversation tagging (kind + level per message),
-    the way training labelled data — needs the whole message list for recency /
-    staleness. Use this from the middleware.
+Entry point:
   - classify_kind_from_content(content): best-effort kind from a lone content
     string, for callers that compress one blob without conversation context.
+    This is the production classifier — it runs reclassify_tool_result first, so
+    the file_read rules (including the cat -n rule) are reachable.
 """
 
 from __future__ import annotations
@@ -31,40 +29,6 @@ _PATH_RE = re.compile(r'"path":\s*"([^"]+)"')
 
 
 # ── kind classification ─────────────────────────────────────────────────────
-
-def classify_segment_kind(msg: dict, position_idx: int) -> str:
-    """Initial kind from a raw chat message (02_parse_trajectories.py)."""
-    role = msg.get("role")
-    if role == "system":
-        return "system_prompt"
-    if role == "user":
-        return "user_turn_current" if position_idx == 0 else "user_turn_history"
-    if role == "assistant":
-        if msg.get("tool_calls"):
-            tc = msg["tool_calls"][0]
-            name = tc.get("function", {}).get("name", "")
-            if name in ("think",):
-                return "assistant_thinking"
-            if name in ("task_tracker", "finish"):
-                return "meta_action"
-            if name in ("str_replace_editor",):
-                return "file_operation"
-            if name in ("execute_bash", "bash"):
-                return "bash_command"
-            return "tool_call"
-        return "assistant_thinking"
-    if role == "tool":
-        content = msg.get("content", "") or ""
-        head = content[:200]
-        if "Traceback" in content or "FAILED" in content or "Error:" in head:
-            return "log_output"
-        if head.strip().startswith(("/", ".", "#!")) or "@@" in head:
-            return "file_read"
-        if "\n" in head and head.count("\n") > 5:
-            return "log_output"
-        return "tool_result"
-    return "tool_result"
-
 
 def reclassify_tool_result(kind: str, content: str) -> str:
     """Refine a generic tool_result by its content patterns (04_label.py)."""
@@ -91,9 +55,9 @@ def reclassify_tool_result(kind: str, content: str) -> str:
 def classify_kind_from_content(content: str) -> str:
     """Best-effort kind for a lone content string (no conversation context).
 
-    Mirrors the `role == "tool"` branch of classify_segment_kind plus the
-    reclassify_tool_result refinements. Defaults to file_read (the product's
-    most common input).
+    Classifies a tool-role payload by its content patterns, applying the
+    reclassify_tool_result refinements first (so the file_read / cat -n rules are
+    reachable). Defaults to file_read (the product's most common input).
     """
     head = content[:300]
     if "[tool_calls]:" in head or '"str_replace_editor"' in head:
@@ -196,34 +160,3 @@ def assign_level(seg: dict, seg_idx: int, total_segs: int,
     return "L2", f"default_{kind}"
 
 
-def tag_messages(messages: list[dict]) -> list[dict]:
-    """Tag a full conversation with (seg_id, kind, level) per message.
-
-    `messages` is a list of chat dicts (role/content, optional tool_calls). The
-    last message is treated as the current turn. Returns a parallel list of
-    {seg_id, kind, level, reason} — the SEG labels to feed the model.
-    """
-    segments = []
-    n = len(messages)
-    for i, msg in enumerate(messages):
-        kind = classify_segment_kind(msg, i)
-        content = msg.get("content", "") or ""
-        kind = reclassify_tool_result(kind, content)
-        segments.append({
-            "seg_id": f"s{i}",
-            "kind": kind,
-            "content": content,
-            "is_current_turn": (i == n - 1),
-        })
-
-    stale = detect_stale_files(segments)
-    labels = []
-    for i, seg in enumerate(segments):
-        level, reason = assign_level(seg, i, n, stale)
-        labels.append({
-            "seg_id": seg["seg_id"],
-            "kind": seg["kind"],
-            "level": level,
-            "reason": reason,
-        })
-    return labels

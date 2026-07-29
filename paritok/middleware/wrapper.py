@@ -29,7 +29,7 @@ from paritok.pipelines.virtual import (
     is_virtual_tool_call,
 )
 from paritok.pipelines.tool_discovery import ToolDiscoveryPipeline
-from paritok.storage import MemoryShadowStorage, ShadowStorage
+from paritok.storage import ShadowStorage, build_shadow_storage
 
 
 @dataclass
@@ -78,7 +78,7 @@ class ParitokEngine:
         storage: ShadowStorage | None = None,
     ):
         self.config = config or ParitokConfig()
-        self.storage = storage or MemoryShadowStorage()
+        self.storage = storage or build_shadow_storage(self.config)
         self.pipeline = CompressionPipeline(self.config, self.storage)
         self.discovery = ToolDiscoveryPipeline(self.config)
 

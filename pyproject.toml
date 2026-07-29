@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "paritok"
-version = "1.2.7"
+version = "1.2.8"
 description = "Open-source context compression for AI coding agents. A middle layer between your agent and the LLM API — self-host the 4B model or use the Paritok GPU server."
 readme = "README.md"
 license = "Apache-2.0"
@@ -33,6 +33,8 @@ dev = ["pytest", "ruff"]
 proxy = ["uvicorn>=0.30.0", "starlette>=0.38.0", "sentence-transformers>=2.2.0", "numpy>=1.24"]
 # Standalone embedding tool selection (engine without the proxy). CPU-only, free, no API.
 toolselect = ["sentence-transformers>=2.2.0", "numpy>=1.24"]
+# Persistent shadow storage (shadow_storage: redis) — [REF:id] entries survive restarts.
+redis = ["redis>=5.0"]
 
 [project.urls]
 Homepage = "https://paritok.com"

@@ -63,7 +63,7 @@ codex:
   api_key: ""              # your OpenAI key (embedded into the generated config.toml);
                            # leave empty to have Codex read env OPENAI_API_KEY instead
 
-shadow_storage: memory     # "memory" | "redis"
+shadow_storage: memory     # "memory" | "redis" (redis persists [REF] across restarts; needs paritok[redis])
 """
 
 _DEFAULT_CONFIG_NAME = "paritok.yaml"

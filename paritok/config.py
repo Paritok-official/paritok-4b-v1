@@ -39,6 +39,17 @@ class GpuServerConfig:
 
 
 @dataclass
+class RedisConfig:
+    """Connection for shadow_storage: "redis" — persistent [REF:id] shadow store
+    that survives proxy restarts (so expand_context keeps working after a
+    restart). Only consulted when shadow_storage == "redis"."""
+
+    url: str = "redis://localhost:6379/0"
+    key_prefix: str = "paritok"  # all keys are namespaced under this prefix
+    ttl_seconds: int | None = None  # None = persist forever; set to expire entries
+
+
+@dataclass
 class CompressionConfig:
     min_tokens: int = 512
     max_tokens: int = 50000
@@ -126,13 +137,17 @@ class ParitokConfig:
     gpu_server: GpuServerConfig = field(default_factory=GpuServerConfig)
     trace: TraceConfig = field(default_factory=TraceConfig)
     codex: CodexConfig = field(default_factory=CodexConfig)
-    shadow_storage: str = "memory"  # "memory" | "redis"
+    shadow_storage: str = "memory"  # "memory" | "redis" (redis needs paritok[redis])
+    redis: RedisConfig = field(default_factory=RedisConfig)
 
     _VALID_SHADOW_STORAGE: ClassVar[frozenset] = frozenset({"memory", "redis"})
 
     def __post_init__(self):
-        assert self.shadow_storage in self._VALID_SHADOW_STORAGE, \
-            f"shadow_storage must be one of {self._VALID_SHADOW_STORAGE}, got '{self.shadow_storage}'"
+        if self.shadow_storage not in self._VALID_SHADOW_STORAGE:
+            raise ValueError(
+                f"shadow_storage must be one of {sorted(self._VALID_SHADOW_STORAGE)}, "
+                f"got '{self.shadow_storage}'"
+            )
 
     @property
     def model(self) -> LocalModelConfig | GpuServerConfig:
@@ -171,6 +186,8 @@ class ParitokConfig:
             config.codex = cls._merge_dataclass(config.codex, data["codex"])
         if "shadow_storage" in data:
             config.shadow_storage = data["shadow_storage"]
+        if "redis" in data:
+            config.redis = cls._merge_dataclass(config.redis, data["redis"])
         config.__post_init__()
         return config
 

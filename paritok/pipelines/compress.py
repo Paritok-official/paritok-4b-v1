@@ -22,8 +22,9 @@ import time
 from dataclasses import dataclass, field
 
 from paritok.config import ParitokConfig
-from paritok.storage import ShadowStorage, MemoryShadowStorage, content_hash
+from paritok.storage import ShadowStorage, build_shadow_storage, content_hash
 from paritok.strategies.local_model import LocalModelStrategy
+from paritok.strategies.tagger import classify_kind_from_content
 from paritok.token_counter import _DEFAULT_ENCODING, count_tokens
 
 _REF_PATTERN = re.compile(r"^\[REF:[a-f0-9]+(?:\s+src=[^\]]*)?\]")
@@ -97,7 +98,7 @@ class CompressionPipeline:
         storage: ShadowStorage | None = None,
     ):
         self.config = config or ParitokConfig()
-        self.storage = storage or MemoryShadowStorage()
+        self.storage = storage or build_shadow_storage(self.config)
         # Active backend: self-hosted local model (Ollama), or the Paritok GPU
         # server (hosted endpoint). The GPU-server backend degrades to a no-op
         # passthrough when the hosted endpoint / GPU is unavailable.
@@ -224,8 +225,15 @@ class CompressionPipeline:
 
         # 5. Call model (SEG protocol: intent + kind + level). Feed model_input when
         # given (e.g. line-numbered form) — content still governs everything else.
+        model_text = model_input if model_input is not None else content
+        # Classify kind centrally so every backend receives a real kind. Without
+        # this only LocalModelStrategy sniffs it internally; GpuServerStrategy would
+        # forward kind=None to the server. Classify on model_text (what the model
+        # actually sees), matching the local fallback.
+        if kind is None:
+            kind = classify_kind_from_content(model_text)
         compressed = self._model.compress(
-            model_input if model_input is not None else content,
+            model_text,
             query=query,
             level=level,
             kind=kind,

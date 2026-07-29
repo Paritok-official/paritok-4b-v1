@@ -17,8 +17,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 logger = logging.getLogger("paritok.proxy")
 
@@ -126,15 +128,20 @@ def _tool_params(t: dict) -> dict:
 def _openai_chat_url(base: str) -> str:
     """Resolve the upstream Chat Completions URL from --openai-url.
 
-    Accepts either a base host (the standard `/v1/chat/completions` suffix is
-    appended — OpenAI `https://api.openai.com`, Groq `https://api.groq.com/openai`)
-    or a full endpoint that already ends in `/chat/completions`, used verbatim.
-    The latter covers providers whose OpenAI-compatible path isn't `{base}/v1/...`,
-    e.g. Gemini: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`.
+    Three cases:
+    - full endpoint already ending in `/chat/completions` → used verbatim.
+    - base whose path already carries a version segment (`/v1`, `/v1beta/openai`,
+      `/api/v1`) — OpenRouter, Gemini, or anyone who included `/v1` themselves →
+      append only `/chat/completions` (adding `/v1` here doubles it, e.g.
+      `https://openrouter.ai/api/v1/v1/chat/completions` → 404).
+    - plain host with no version (OpenAI `https://api.openai.com`, Groq
+      `https://api.groq.com/openai`) → append the standard `/v1/chat/completions`.
     """
     base = base.rstrip("/")
     if base.endswith("/chat/completions"):
         return base
+    if re.search(r"/v\d", urlsplit(base).path):
+        return f"{base}/chat/completions"
     return f"{base}/v1/chat/completions"
 
 

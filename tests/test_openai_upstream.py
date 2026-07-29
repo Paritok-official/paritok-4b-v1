@@ -12,6 +12,18 @@ def test_openai_chat_url_appends_suffix_for_base_hosts():
     assert _openai_chat_url("https://api.openai.com/") == "https://api.openai.com/v1/chat/completions"
 
 
+def test_openai_chat_url_no_double_version_for_versioned_bases():
+    # A base whose path already carries a version segment must NOT get a second
+    # /v1 (that yields .../v1/v1/chat/completions -> 404 on OpenRouter etc.).
+    assert _openai_chat_url("https://openrouter.ai/api/v1") == \
+        "https://openrouter.ai/api/v1/chat/completions"
+    assert _openai_chat_url("https://generativelanguage.googleapis.com/v1beta/openai") == \
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    # User who already appended /v1 to an OpenAI-style host: no doubling.
+    assert _openai_chat_url("https://api.openai.com/v1") == \
+        "https://api.openai.com/v1/chat/completions"
+
+
 def test_openai_chat_url_uses_full_endpoint_verbatim():
     # Gemini's OpenAI-compat path isn't {base}/v1/...; a full endpoint is used as-is.
     full = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
