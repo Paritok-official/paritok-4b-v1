@@ -33,6 +33,10 @@ class ProxyStats:
     total_compressed_tokens: int = 0
     total_tools_filtered: int = 0
     total_items_compressed: int = 0
+    # How many times the model called expand_context (a [REF] was re-delivered in
+    # full), and how many lossy Edit calls edit_recovery rewrote to match the file.
+    total_expansions: int = 0
+    total_edits_recovered: int = 0
     # Per-model buckets for the parts THIS middleware touches — the content it
     # compresses (tool results / file reads / old history) PLUS the tool schemas
     # it stubs. {model: {"orig", "comp"}}: `orig` = what those parts would be
@@ -92,12 +96,17 @@ class ProxyStats:
         expanded bytes re-enter the cacheable prefix on later turns just like
         other content, so they land in the same content slot the request used.
         """
+        self.total_expansions += 1
         if expanded_tokens <= 0:
             return
         self.total_compressed_tokens += expanded_tokens
         bucket = self.by_model.setdefault(model or "unknown", self._new_bucket())
         cslot = "first" if bucket["content_first_orig"] == 0 else "rest"
         bucket[f"content_{cslot}_comp"] += expanded_tokens
+
+    def record_edit_recovery(self) -> None:
+        """Count one lossy Edit that edit_recovery rewrote to match the real file."""
+        self.total_edits_recovered += 1
 
     @property
     def total_saved_tokens(self) -> int:
@@ -134,6 +143,8 @@ class ProxyStats:
             "compression_ratio": round(comp / orig, 3) if orig else 0.0,
             "tokens_saved": self.total_saved_tokens,
             "tools_filtered": self.total_tools_filtered,
+            "expansions": self.total_expansions,
+            "edits_recovered": self.total_edits_recovered,
             "estimated_cost_saved_usd": f"${self.estimated_cost_saved_usd:.2f}",
         }
 
@@ -294,6 +305,7 @@ def create_app(
         ParitokEngine,
         _inject_virtual_tools,
     )
+    from paritok.pipelines.edit_recovery import recover_edit, strip_read_line_numbers
     from paritok.pipelines.virtual import is_virtual_tool_call
     from paritok.proxy.adapters import anthropic as anth_adapter
     from paritok.proxy.adapters import openai as oai_adapter
@@ -390,7 +402,7 @@ def create_app(
         headers = _forward_headers(request)
         url = f"{anthropic_base_url}/v1/messages"
         forward_body = parsed.to_dict()
-       
+
         if parsed.stream:
             return await _stream_anthropic(url, headers, forward_body, stubbed)
         try:
@@ -401,6 +413,7 @@ def create_app(
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        final_body = _recover_edits(final_body)
         return JSONResponse(content=final_body, status_code=status_code, headers=resp_headers)
 
     # ── OpenAI handler ──
@@ -712,6 +725,100 @@ def create_app(
     def _shadow_ref(call_input: dict) -> str:
         return (call_input.get("shadow_id") or call_input.get("id") or "").strip()
 
+    _EDIT_TOOLS = ("Edit", "str_replace", "str_replace_editor")
+
+    def _recover_edits(message: dict) -> dict:
+        """Fix Edit tool calls the model authored against a lossy [REF] summary.
+
+        The model's `old_string` reflects the compressed view (collapsed signature,
+        dropped docstring/blank lines) and won't match the real file, so the client's
+        exact-match Edit would fail and it would re-read. Map it back onto the true
+        original (from the shadow store) and rewrite old_string/new_string so the Edit
+        applies first try, preserving the docstrings/comments/formatting the summary
+        dropped. On any ambiguity we leave the call untouched (the model can expand)."""
+        blocks = message.get("content")
+        if not isinstance(blocks, list):
+            return message
+        for b in blocks:
+            if not (isinstance(b, dict) and b.get("type") == "tool_use"
+                    and b.get("name") in _EDIT_TOOLS):
+                continue
+            inp = b.get("input") or {}
+            fp = inp.get("file_path") or inp.get("path")
+            old, new = inp.get("old_string"), inp.get("new_string")
+            if not (fp and isinstance(old, str) and isinstance(new, str) and old):
+                continue
+            sid = engine.storage.get_shadow_for_path(fp)
+            original = engine.storage.retrieve(sid) if sid else None
+            if not original:
+                continue
+            clean = strip_read_line_numbers(original)
+            if old in clean:
+                continue  # already matches the file; nothing to fix
+            out = recover_edit(old, new, clean)
+            if out is None:
+                continue  # ambiguous / real content drop -> leave it, model can expand
+            client_old, client_new = out
+            b["input"] = {**inp, "old_string": client_old, "new_string": client_new}
+            proxy_stats.record_edit_recovery()
+            logger.info("edit_recovery: rewrote Edit old_string for %s to match the file", fp)
+        return message
+
+    def _parse_sse_to_message(raw: bytes) -> dict:
+        """Reassemble a finished Anthropic message from a buffered SSE byte stream."""
+        msg: dict = {"content": []}
+        blocks: dict = {}
+        frag: dict = {}
+        for chunk in raw.split(b"\n\n"):
+            data = None
+            for line in chunk.split(b"\n"):
+                if line.startswith(b"data:"):
+                    data = line[5:].strip()
+            if not data:
+                continue
+            try:
+                ev = json.loads(data)
+            except Exception:
+                continue
+            t = ev.get("type")
+            if t == "message_start":
+                m = ev.get("message", {}) or {}
+                for k in ("id", "model", "role"):
+                    msg[k] = m.get(k)
+                msg["usage"] = m.get("usage", {})
+            elif t == "content_block_start":
+                i = ev.get("index")
+                blocks[i] = dict(ev.get("content_block", {}) or {})
+                frag[i] = ""
+            elif t == "content_block_delta":
+                i = ev.get("index")
+                d = ev.get("delta", {}) or {}
+                dt = d.get("type")
+                if dt == "text_delta":
+                    blocks[i]["text"] = blocks[i].get("text", "") + d.get("text", "")
+                elif dt == "input_json_delta":
+                    frag[i] += d.get("partial_json", "")
+                elif dt == "thinking_delta":
+                    blocks[i]["thinking"] = blocks[i].get("thinking", "") + d.get("thinking", "")
+                elif dt == "signature_delta":
+                    blocks[i]["signature"] = d.get("signature", "")
+            elif t == "content_block_stop":
+                i = ev.get("index")
+                if i in blocks and blocks[i].get("type") == "tool_use" and frag.get(i):
+                    try:
+                        blocks[i]["input"] = json.loads(frag[i])
+                    except Exception:
+                        pass
+            elif t == "message_delta":
+                d = ev.get("delta", {}) or {}
+                msg["stop_reason"] = d.get("stop_reason")
+                msg["stop_sequence"] = d.get("stop_sequence")
+                u = ev.get("usage") or {}
+                if u:
+                    msg["usage"] = {**(msg.get("usage") or {}), **u}
+        msg["content"] = [blocks[i] for i in sorted(blocks)]
+        return msg
+
     async def _anthropic_resolve(url, headers, body, stubbed_tools):
         """Loop the upstream (non-streaming), answering virtual tool calls ourselves,
         until a plain turn returns. Yields (message, status_code, response_headers)."""
@@ -794,15 +901,24 @@ def create_app(
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
 
         raw = bytes(collected)
-        if not any(marker in raw for marker in _VIRTUAL_MARKERS):
+        has_virtual = any(marker in raw for marker in _VIRTUAL_MARKERS)
+        has_edit = any(f'"{t}"'.encode() in raw for t in _EDIT_TOOLS)
+        if not has_virtual and not has_edit:
             return _sse_stream(raw, status)  # untouched pass-through
 
-        try:
-            message, _st, _hd = await _anthropic_resolve(url, headers, body, stubbed_tools)
-        except (httpx.ConnectError, httpx.TimeoutException):
-            return _sse_stream(raw, status)
+        if has_virtual:
+            # A virtual tool call is present — resolve it server-side (may re-POST).
+            try:
+                message, _st, _hd = await _anthropic_resolve(url, headers, body, stubbed_tools)
+            except (httpx.ConnectError, httpx.TimeoutException):
+                return _sse_stream(raw, status)
+        else:
+            # Only a client-side Edit is present: reassemble the message we already
+            # buffered (no extra upstream call) and rewrite the Edit in place.
+            message = _parse_sse_to_message(raw)
         if not isinstance(message.get("content"), list):
             return _sse_stream(raw, status)  # error payload — prefer the raw stream
+        message = _recover_edits(message)
         return _sse_stream(_message_to_events(message))
 
     def _event(name: str, data: dict) -> str:

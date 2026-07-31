@@ -1,0 +1,122 @@
+[
+ {
+  "name": "1 single-line docstring, add param",
+  "original": "def add(a, b):\n    \"\"\"Return the sum.\"\"\"\n    return a + b\n",
+  "old_string": "def add(a, b):\n    return a + b",
+  "new_string": "def add(a, b, c=0):\n    return a + b"
+ },
+ {
+  "name": "2 multi-line docstring, add param",
+  "original": "def add(\n    a,\n    b,\n):\n    \"\"\"Return the sum.\n\n    Longer text.\n    \"\"\"\n    return a + b\n",
+  "old_string": "def add(a, b):\n    return a + b",
+  "new_string": "def add(a, b, c=0):\n    return a + b"
+ },
+ {
+  "name": "3 single-quote docstring, edit body",
+  "original": "def f(x):\n    '''Doc here.'''\n    return x * 2\n",
+  "old_string": "def f(x):\n    return x * 2",
+  "new_string": "def f(x):\n    return x * 3"
+ },
+ {
+  "name": "4 module docstring + func, edit body",
+  "original": "\"\"\"Module doc.\"\"\"\n\n\ndef g(n):\n    \"\"\"Func doc.\"\"\"\n    return n + 1\n",
+  "old_string": "def g(n):\n    return n + 1",
+  "new_string": "def g(n):\n    return n + 2"
+ },
+ {
+  "name": "5 class + method docstrings, edit method",
+  "original": "class C:\n    \"\"\"Class doc.\"\"\"\n\n    def m(self, v):\n        \"\"\"Method doc.\"\"\"\n        return v\n",
+  "old_string": "class C:\n    def m(self, v):\n        return v",
+  "new_string": "class C:\n    def m(self, v):\n        return v * 2"
+ },
+ {
+  "name": "6 docstring + inline comments, edit body",
+  "original": "def h(a):\n    \"\"\"Doc.\"\"\"\n    # a comment\n    b = a + 1  # inline\n    return b\n",
+  "old_string": "def h(a):\n    # a comment\n    b = a + 1  # inline\n    return b",
+  "new_string": "def h(a):\n    # a comment\n    b = a + 5  # inline\n    return b"
+ },
+ {
+  "name": "7 no docstring (control), add param",
+  "original": "def p(a, b):\n    return a - b\n",
+  "old_string": "def p(a, b):\n    return a - b",
+  "new_string": "def p(a, b, c=1):\n    return a - b"
+ },
+ {
+  "name": "8 multi-line sig + docstring, add param (the engine pattern)",
+  "original": "def proc(\n    records,\n    threshold,\n    strict,\n):\n    \"\"\"Filter and score.\"\"\"\n    out = []\n    return out\n",
+  "old_string": "def proc(records, threshold, strict):\n    out = []\n    return out",
+  "new_string": "def proc(records, threshold, strict, dedupe=False):\n    out = []\n    return out"
+ },
+ {
+  "name": "9 docstring with embedded quotes, edit body",
+  "original": "def q(s):\n    \"\"\"Return 'quoted' value.\"\"\"\n    return s\n",
+  "old_string": "def q(s):\n    return s",
+  "new_string": "def q(s):\n    return s.strip()"
+ },
+ {
+  "name": "10 nested function with docstrings, edit inner",
+  "original": "def outer(x):\n    \"\"\"Outer.\"\"\"\n    def inner(y):\n        \"\"\"Inner.\"\"\"\n        return y\n    return inner(x)\n",
+  "old_string": "def outer(x):\n    def inner(y):\n        return y\n    return inner(x)",
+  "new_string": "def outer(x):\n    def inner(y):\n        return y + 1\n    return inner(x)"
+ },
+ {
+  "name": "11 blank lines + docstring, edit body",
+  "original": "def r(a):\n    \"\"\"Doc.\"\"\"\n\n    v = a\n\n    return v\n",
+  "old_string": "def r(a):\n    v = a\n    return v",
+  "new_string": "def r(a):\n    v = a * 2\n    return v"
+ },
+ {
+  "name": "12 docstring, add a whole new body line",
+  "original": "def s(a):\n    \"\"\"Doc.\"\"\"\n    x = a\n    return x\n",
+  "old_string": "def s(a):\n    x = a\n    return x",
+  "new_string": "def s(a):\n    x = a\n    x = x + 1\n    return x"
+ },
+ {
+  "name": "13 two funcs each docstring, edit second",
+  "original": "def a1(x):\n    \"\"\"One.\"\"\"\n    return x\n\n\ndef a2(y):\n    \"\"\"Two.\"\"\"\n    return y\n",
+  "old_string": "def a1(x):\n    return x\ndef a2(y):\n    return y",
+  "new_string": "def a1(x):\n    return x\ndef a2(y):\n    return y - 1"
+ },
+ {
+  "name": "14 raw-string-like docstring, edit body",
+  "original": "def t(p):\n    \"\"\"Path C:\\\\x docs.\"\"\"\n    return p\n",
+  "old_string": "def t(p):\n    return p",
+  "new_string": "def t(p):\n    return p.upper()"
+ },
+ {
+  "name": "15 long multi-line docstring + multi-line sig, add param",
+  "original": "def big(\n    alpha,\n    beta,\n):\n    \"\"\"Summary.\n\n    Args:\n        alpha: first.\n        beta: second.\n    \"\"\"\n    return alpha + beta\n",
+  "old_string": "def big(alpha, beta):\n    return alpha + beta",
+  "new_string": "def big(alpha, beta, gamma=0):\n    return alpha + beta"
+ },
+ {
+  "name": "16 trailing comment on edited line",
+  "original": "def c1(a):\n    \"\"\"Doc.\"\"\"\n    x = a + 1  # keep me\n    return x\n",
+  "old_string": "def c1(a):\n    x = a + 1  # keep me\n    return x",
+  "new_string": "def c1(a):\n    x = a + 9  # keep me\n    return x"
+ },
+ {
+  "name": "17 decorator + docstring, add param",
+  "original": "@decorator\ndef d1(a, b):\n    \"\"\"Doc.\"\"\"\n    return a + b\n",
+  "old_string": "@decorator\ndef d1(a, b):\n    return a + b",
+  "new_string": "@decorator\ndef d1(a, b, c=0):\n    return a + b"
+ },
+ {
+  "name": "18 async def + docstring, edit body",
+  "original": "async def af(u):\n    \"\"\"Fetch.\"\"\"\n    data = await get(u)\n    return data\n",
+  "old_string": "async def af(u):\n    data = await get(u)\n    return data",
+  "new_string": "async def af(u):\n    data = await get(u)\n    return data or {}"
+ },
+ {
+  "name": "19 multi-line dict literal + docstring, edit value",
+  "original": "def cfg():\n    \"\"\"Config.\"\"\"\n    return {\n        \"a\": 1,\n        \"b\": 2,\n    }\n",
+  "old_string": "def cfg():\n    return {\n        \"a\": 1,\n        \"b\": 2,\n    }",
+  "new_string": "def cfg():\n    return {\n        \"a\": 1,\n        \"b\": 3,\n    }"
+ },
+ {
+  "name": "20 comment-only lines around edit + docstring",
+  "original": "def e1(a):\n    \"\"\"Doc.\"\"\"\n    # step 1\n    b = a\n    # step 2\n    return b\n",
+  "old_string": "def e1(a):\n    # step 1\n    b = a\n    # step 2\n    return b",
+  "new_string": "def e1(a):\n    # step 1\n    b = a + 100\n    # step 2\n    return b"
+ }
+]
