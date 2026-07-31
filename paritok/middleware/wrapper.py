@@ -26,6 +26,7 @@ from paritok.pipelines.compress import CompressionPipeline
 from paritok.pipelines.virtual import (
     EXPAND_CONTEXT_SCHEMA,
     GATEWAY_SEARCH_TOOLS_SCHEMA,
+    is_expand_call,
     is_virtual_tool_call,
 )
 from paritok.pipelines.tool_discovery import ToolDiscoveryPipeline
@@ -161,7 +162,7 @@ class ParitokEngine:
         if not is_virtual_tool_call(tool_name):
             return None
 
-        if tool_name == "expand_context":
+        if is_expand_call(tool_name):
             # Be tolerant about the key ("shadow_id" per schema, but accept "id")
             # and the value ("abc123", "abc123 src=foo.py", or "[REF:abc123 ...]").
             raw = (tool_input.get("shadow_id") or tool_input.get("id") or "")

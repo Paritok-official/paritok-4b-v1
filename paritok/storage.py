@@ -55,6 +55,22 @@ class ShadowStorage(ABC):
         sid = self.get_shadow_for_path(path)
         return [sid] if sid else []
 
+    def get_path_for_shadow(self, shadow_id: str) -> str | None:
+        """Reverse of set_shadow_for_path: the source path a shadow_id came from."""
+        return None
+
+    def pin_source(self, path: str) -> None:
+        """Pin a source PATH so future reads of that file are passed through VERBATIM
+        (not compressed). Set after the model calls read_original on a file: it needs the
+        exact bytes, so stop shrinking that file — the model then sees the current file
+        directly and no longer has to re-expand it every turn. This passes through whatever
+        the client currently sends (always up to date), so editing the file is safe.
+        Default no-op; backends that support it override."""
+        return None
+
+    def is_source_pinned(self, path: str) -> bool:
+        return False
+
 
 class MemoryShadowStorage(ShadowStorage):
     """In-process dict storage. Fast, lost on restart."""
@@ -64,6 +80,8 @@ class MemoryShadowStorage(ShadowStorage):
         self._compressed_cache: dict[str, str] = {}
         self._path_to_shadow: dict[str, str] = {}
         self._path_to_shadows: dict[str, list[str]] = {}
+        self._shadow_to_path: dict[str, str] = {}
+        self._pinned_paths: set[str] = set()
 
     def store(self, content: str) -> str:
         sid = content_hash(content)
@@ -86,6 +104,7 @@ class MemoryShadowStorage(ShadowStorage):
         if not path:
             return
         self._path_to_shadow[path] = shadow_id
+        self._shadow_to_path[shadow_id] = path
         lst = self._path_to_shadows.setdefault(path, [])
         if shadow_id in lst:
             lst.remove(shadow_id)
@@ -94,6 +113,16 @@ class MemoryShadowStorage(ShadowStorage):
 
     def get_shadow_for_path(self, path: str) -> str | None:
         return self._path_to_shadow.get(path) if path else None
+
+    def get_path_for_shadow(self, shadow_id: str) -> str | None:
+        return self._shadow_to_path.get(shadow_id) if shadow_id else None
+
+    def pin_source(self, path: str) -> None:
+        if path:
+            self._pinned_paths.add(path)
+
+    def is_source_pinned(self, path: str) -> bool:
+        return bool(path) and path in self._pinned_paths
 
     def get_shadows_for_path(self, path: str) -> list[str]:
         return list(reversed(self._path_to_shadows.get(path, []))) if path else []

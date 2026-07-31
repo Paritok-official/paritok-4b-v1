@@ -171,6 +171,15 @@ class CompressionPipeline:
         if _REF_PATTERN.match(content.strip()):
             return self._skip(content, original_tokens, "already_compressed")
 
+        # 1a. Pin-on-expand: once the model has called read_original on this file it needs
+        # the exact bytes, so stop shrinking that file — pass the read through VERBATIM.
+        # The model then sees the current file directly and no longer re-expands it every
+        # turn. This passes through whatever the client currently sends (always current),
+        # so editing the file stays safe. Checked before the path short-circuit so a pinned
+        # file never gets handed back a [REF] stub.
+        if source and self.storage.is_source_pinned(source):
+            return self._skip(content, original_tokens, "pinned")
+
         # 1b. Path-keyed short-circuit (Read short-circuit). Bypasses the
         # min/max token gates: if we have a prior ref for this exact source
         # path and the new content is byte-equal or a normalized substring

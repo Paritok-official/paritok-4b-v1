@@ -306,7 +306,7 @@ def create_app(
         _inject_virtual_tools,
     )
     from paritok.pipelines.edit_recovery import recover_edit, strip_read_line_numbers
-    from paritok.pipelines.virtual import is_virtual_tool_call
+    from paritok.pipelines.virtual import is_expand_call, is_virtual_tool_call
     from paritok.proxy.adapters import anthropic as anth_adapter
     from paritok.proxy.adapters import openai as oai_adapter
     from paritok.proxy.adapters import responses as resp_adapter
@@ -395,7 +395,7 @@ def create_app(
         # [REF:] compression convention and that it can pull originals back on demand.
         # The proxy resolves expand_context itself (server-side), so the client agent
         # never needs to own the tool — this works for Claude Code, etc.
-        if parsed.tools and any(t.get("name") == "expand_context" for t in parsed.tools):
+        if parsed.tools and any(is_expand_call(t.get("name", "")) for t in parsed.tools):
             parsed.system = _prepend_ref_guidance(parsed.system)
 
         # Forward
@@ -475,7 +475,7 @@ def create_app(
         # If expand_context was injected, tell the model (once, via system) about the
         # [REF:] convention. The proxy resolves expand_context server-side (same as the
         # Anthropic path), so Codex / any OpenAI Chat Completions client never owns it.
-        if processed_tools and any(t.get("name") == "expand_context" for t in processed_tools):
+        if processed_tools and any(is_expand_call(t.get("name", "")) for t in processed_tools):
             parsed.messages = _prepend_ref_guidance_openai(parsed.messages)
 
         # Forward
@@ -559,7 +559,7 @@ def create_app(
                            tools_compressed_tokens=tools_comp_tok)
         _report_tool_savings(body.get("model", ""), tools_orig_tok, tools_comp_tok)
 
-        if parsed.tools and any(t.get("name") == "expand_context" for t in parsed.tools):
+        if parsed.tools and any(is_expand_call(t.get("name", "")) for t in parsed.tools):
             parsed.instructions = _prepend_ref_guidance_responses(parsed.instructions)
 
         headers = _forward_headers(request)
@@ -670,14 +670,17 @@ def create_app(
 
     _MAX_RESOLVE_ROUNDS = 5
     _STREAM_HEADERS = {"cache-control": "no-cache", "x-paritok-proxy": "true"}
-    _VIRTUAL_MARKERS = (b"expand_context", b"gateway_search_tools")
+    _VIRTUAL_MARKERS = (b"read_original", b"expand_context", b"gateway_search_tools")
     _REF_GUIDANCE = (
         "A few earlier tool outputs here were shrunk to save context. Shrunk text opens "
-        "with a marker like `[REF:<id> src=<path>]` and is followed by a brief summary. "
-        "When that summary already covers the step, keep going with it. When you genuinely "
-        "need the untouched original — say, to study the code line by line or to change it — "
-        "call `expand_context` with the `<id>` and the exact original is returned to you. "
-        "Reach for `expand_context` rather than re-reading the same file via Read/Bash/Grep."
+        "with a marker like `[REF:<id> src=<path>]` and is followed by a lossy summary "
+        "(reformatted, with blank lines / docstrings / some lines dropped) that does NOT "
+        "match the real file byte-for-byte. When the summary already covers the step, keep "
+        "going with it. When you need the EXACT original — to read code closely or to EDIT "
+        "it — call `read_original` with the `<id>` and the true file is returned to you. "
+        "Do NOT try to reconstruct the exact file by dumping it with Bash (cat / sed / head "
+        "/ tail) or a fresh Read — those outputs get shrunk again, so you just get the same "
+        "lossy view. `read_original` is the only way to get the true bytes."
     )
 
     def _prepend_ref_guidance(system):
@@ -724,6 +727,15 @@ def create_app(
 
     def _shadow_ref(call_input: dict) -> str:
         return (call_input.get("shadow_id") or call_input.get("id") or "").strip()
+
+    def _pin_expanded(ref: str) -> None:
+        """After the model expands a ref, pin its SOURCE FILE so future reads pass through
+        verbatim — the model stops re-expanding the same file every turn."""
+        if not ref:
+            return
+        src = engine.storage.get_path_for_shadow(ref)
+        if src:
+            engine.storage.pin_source(src)
 
     _EDIT_TOOLS = ("Edit", "str_replace", "str_replace_editor")
 
@@ -870,13 +882,14 @@ def create_app(
                     if ref:
                         served_refs.add(ref)
                         fresh += 1
-                    if call.get("name") == "expand_context":
+                    if is_expand_call(call.get("name", "")):
                         args = {**args, "shadow_id": ref}
                     out = _virtual_call_output(
                         engine.resolve_virtual_call(call.get("name", ""), args,
                                                     stubbed_tools=stubbed_tools))
-                    if call.get("name") == "expand_context":
+                    if is_expand_call(call.get("name", "")):
                         proxy_stats.record_expansion(count_tokens(out, model), model)
+                        _pin_expanded(ref)
                 results.append({"type": "tool_result",
                                 "tool_use_id": call.get("id", ""), "content": out})
             thread = [*thread, {"role": "user", "content": results}]
@@ -1085,13 +1098,14 @@ def create_app(
                     if ref:
                         served_refs.add(ref)
                         fresh += 1
-                    if fn.get("name") == "expand_context":
+                    if is_expand_call(fn.get("name", "")):
                         args = {**args, "shadow_id": ref}
                     out = _virtual_call_output(
                         engine.resolve_virtual_call(fn.get("name", ""), args,
                                                     stubbed_tools=stubbed_tools))
-                    if fn.get("name") == "expand_context":
+                    if is_expand_call(fn.get("name", "")):
                         proxy_stats.record_expansion(count_tokens(out, model), model)
+                        _pin_expanded(ref)
                 thread = [*thread, {"role": "tool",
                                     "tool_call_id": tc.get("id", ""), "content": out}]
 
@@ -1212,13 +1226,14 @@ def create_app(
                     if ref:
                         served_refs.add(ref)
                         fresh += 1
-                    if call.get("name") == "expand_context":
+                    if is_expand_call(call.get("name", "")):
                         args = {**args, "shadow_id": ref}
                     out = _virtual_call_output(
                         engine.resolve_virtual_call(call.get("name", ""), args,
                                                     stubbed_tools=stubbed_tools))
-                    if call.get("name") == "expand_context":
+                    if is_expand_call(call.get("name", "")):
                         proxy_stats.record_expansion(count_tokens(out, model), model)
+                        _pin_expanded(ref)
                 conv = [*conv, {"type": "function_call_output",
                                 "call_id": call.get("call_id", ""), "output": out}]
 

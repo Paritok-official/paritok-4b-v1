@@ -29,7 +29,7 @@ def test_virtual_tool_anthropic_shape_is_rebuilt_with_params_from_input_schema()
     from paritok.pipelines.virtual import EXPAND_CONTEXT_SCHEMA
     out = _to_responses_tool(EXPAND_CONTEXT_SCHEMA)
     assert out["type"] == "function"
-    assert out["name"] == "expand_context"
+    assert out["name"] == EXPAND_CONTEXT_SCHEMA["name"]
     # input_schema must be surfaced as `parameters`
     assert out["parameters"] == EXPAND_CONTEXT_SCHEMA["input_schema"]
     assert "shadow_id" in out["parameters"]["properties"]

@@ -34,6 +34,21 @@ def test_path_keeps_all_reads_most_recent_first():
     assert s.get_shadows_for_path("/unknown") == []
 
 
+def test_pin_source_and_reverse_lookup():
+    """After a shadow is stored for a path, the path is reverse-lookable, and pinning
+    the path is a per-path flag (used to pass a file through verbatim after expand)."""
+    s = MemoryShadowStorage()
+    sid = s.store("code")
+    s.set_shadow_for_path("/f.py", sid)
+    assert s.get_path_for_shadow(sid) == "/f.py"
+    assert s.get_path_for_shadow("nope") is None
+    assert s.is_source_pinned("/f.py") is False
+    s.pin_source("/f.py")
+    assert s.is_source_pinned("/f.py") is True
+    assert s.is_source_pinned("/other.py") is False
+    assert s.is_source_pinned("") is False
+
+
 # ── config validation ────────────────────────────────────────────────────────
 
 def test_memory_is_valid_and_default():
