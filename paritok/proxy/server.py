@@ -748,16 +748,27 @@ def create_app(
             old, new = inp.get("old_string"), inp.get("new_string")
             if not (fp and isinstance(old, str) and isinstance(new, str) and old):
                 continue
-            sid = engine.storage.get_shadow_for_path(fp)
-            original = engine.storage.retrieve(sid) if sid else None
-            if not original:
+            # Try each read stored for this path, most recent first. The latest read may
+            # be a tiny offset/limit slice (which alone can't contain a multi-line edit),
+            # so fall back to an earlier, fuller read of the same file.
+            sids = engine.storage.get_shadows_for_path(fp)
+            if not sids:
                 continue
-            clean = strip_read_line_numbers(original)
-            if old in clean:
-                continue  # already matches the file; nothing to fix
-            out = recover_edit(old, new, clean)
-            if out is None:
-                continue  # ambiguous / real content drop -> leave it, model can expand
+            out = None
+            already = False
+            for sid in sids:
+                original = engine.storage.retrieve(sid)
+                if not original:
+                    continue
+                clean = strip_read_line_numbers(original)
+                if old in clean:
+                    already = True
+                    break  # this read already matches the file; nothing to fix
+                out = recover_edit(old, new, clean)
+                if out is not None:
+                    break
+            if already or out is None:
+                continue
             client_old, client_new = out
             b["input"] = {**inp, "old_string": client_old, "new_string": client_new}
             proxy_stats.record_edit_recovery()

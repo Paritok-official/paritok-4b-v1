@@ -15,6 +15,25 @@ from paritok.storage import (
 )
 
 
+def test_path_keeps_all_reads_most_recent_first():
+    """A path must remember EVERY read, not just the latest. A tiny offset/limit slice
+    read must not clobber the full-file read out of existence — edit_recovery falls back
+    to the fuller earlier read when the latest can't contain a multi-line edit."""
+    s = MemoryShadowStorage()
+    full = s.store("full file\nline 2\nline 3\n")
+    s.set_shadow_for_path("/f.py", full)
+    slice_sid = s.store("line 2\n")  # a 1-line offset/limit slice
+    s.set_shadow_for_path("/f.py", slice_sid)
+
+    # latest is the slice (back-compat), but the full read is still reachable, first.
+    assert s.get_shadow_for_path("/f.py") == slice_sid
+    shadows = s.get_shadows_for_path("/f.py")
+    assert shadows == [slice_sid, full]  # most recent first
+    assert full in shadows  # the full read survived the slice read
+    assert s.get_shadows_for_path("") == []
+    assert s.get_shadows_for_path("/unknown") == []
+
+
 # ── config validation ────────────────────────────────────────────────────────
 
 def test_memory_is_valid_and_default():

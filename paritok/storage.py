@@ -47,6 +47,14 @@ class ShadowStorage(ABC):
         """Return the most recent shadow_id stored for a source path, or None."""
         return None
 
+    def get_shadows_for_path(self, path: str) -> list[str]:
+        """All shadow_ids ever stored for a path, most recent first. Lets a consumer
+        (edit_recovery) fall back to an earlier, fuller read when the latest read was a
+        tiny offset/limit slice that would otherwise be the only thing keyed to the path.
+        Default: just the latest (single-shadow backends)."""
+        sid = self.get_shadow_for_path(path)
+        return [sid] if sid else []
+
 
 class MemoryShadowStorage(ShadowStorage):
     """In-process dict storage. Fast, lost on restart."""
@@ -55,6 +63,7 @@ class MemoryShadowStorage(ShadowStorage):
         self._store: dict[str, str] = {}
         self._compressed_cache: dict[str, str] = {}
         self._path_to_shadow: dict[str, str] = {}
+        self._path_to_shadows: dict[str, list[str]] = {}
 
     def store(self, content: str) -> str:
         sid = content_hash(content)
@@ -74,11 +83,20 @@ class MemoryShadowStorage(ShadowStorage):
         return self._compressed_cache.get(shadow_id)
 
     def set_shadow_for_path(self, path: str, shadow_id: str) -> None:
-        if path:
-            self._path_to_shadow[path] = shadow_id
+        if not path:
+            return
+        self._path_to_shadow[path] = shadow_id
+        lst = self._path_to_shadows.setdefault(path, [])
+        if shadow_id in lst:
+            lst.remove(shadow_id)
+        lst.append(shadow_id)  # most recent last
+        del lst[:-8]  # keep the last few reads only
 
     def get_shadow_for_path(self, path: str) -> str | None:
         return self._path_to_shadow.get(path) if path else None
+
+    def get_shadows_for_path(self, path: str) -> list[str]:
+        return list(reversed(self._path_to_shadows.get(path, []))) if path else []
 
 
 class RedisShadowStorage(ShadowStorage):
