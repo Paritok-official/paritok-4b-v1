@@ -80,6 +80,25 @@ class ProxyStats:
             bucket[f"tools_{slot}_orig"] += tools_original_tokens
             bucket[f"tools_{slot}_comp"] += tools_compressed_tokens
 
+    def record_expansion(self, expanded_tokens: int, model: str = "") -> None:
+        """Fold a served expand_context back onto the compressed side.
+
+        When the model calls expand_context, the proxy hands it the *full
+        original* it had compressed down to a [REF:id] stub — so for that item
+        the compression did not stick. Count the re-delivered original as
+        compressed output (original is left untouched): tokens_saved and
+        cost_saved fall, going negative on a turn that expands more than it
+        compressed, and compression_ratio rises toward (or past) 1.0. The
+        expanded bytes re-enter the cacheable prefix on later turns just like
+        other content, so they land in the same content slot the request used.
+        """
+        if expanded_tokens <= 0:
+            return
+        self.total_compressed_tokens += expanded_tokens
+        bucket = self.by_model.setdefault(model or "unknown", self._new_bucket())
+        cslot = "first" if bucket["content_first_orig"] == 0 else "rest"
+        bucket[f"content_{cslot}_comp"] += expanded_tokens
+
     @property
     def total_saved_tokens(self) -> int:
         return self.total_original_tokens - self.total_compressed_tokens
@@ -697,6 +716,7 @@ def create_app(
         """Loop the upstream (non-streaming), answering virtual tool calls ourselves,
         until a plain turn returns. Yields (message, status_code, response_headers)."""
         body = {**body, "stream": False}
+        model = body.get("model", "")
         thread = list(body.get("messages", []))
         served_refs: set[str] = set()
         reply, resp = {}, None
@@ -737,6 +757,8 @@ def create_app(
                     out = _virtual_call_output(
                         engine.resolve_virtual_call(call.get("name", ""), args,
                                                     stubbed_tools=stubbed_tools))
+                    if call.get("name") == "expand_context":
+                        proxy_stats.record_expansion(count_tokens(out, model), model)
                 results.append({"type": "tool_result",
                                 "tool_use_id": call.get("id", ""), "content": out})
             thread = [*thread, {"role": "user", "content": results}]
@@ -884,6 +906,7 @@ def create_app(
         """Loop the upstream (non-streaming), answering virtual tool calls ourselves,
         until a plain turn returns. Returns (reply, status_code, response_headers)."""
         body = {**body, "stream": False}
+        model = body.get("model", "")
         thread = list(body.get("messages", []))
         served_refs: set[str] = set()
         reply, resp = {}, None
@@ -940,6 +963,8 @@ def create_app(
                     out = _virtual_call_output(
                         engine.resolve_virtual_call(fn.get("name", ""), args,
                                                     stubbed_tools=stubbed_tools))
+                    if fn.get("name") == "expand_context":
+                        proxy_stats.record_expansion(count_tokens(out, model), model)
                 thread = [*thread, {"role": "tool",
                                     "tool_call_id": tc.get("id", ""), "content": out}]
 
@@ -1023,6 +1048,7 @@ def create_app(
         """Loop the upstream (non-streaming), answering virtual function_calls
         ourselves, until a plain turn returns. Returns (reply, status, headers)."""
         body = {**body, "stream": False}
+        model = body.get("model", "")
         conv = resp_adapter.normalize_input(body.get("input", []))
         served_refs: set[str] = set()
         reply, resp = {}, None
@@ -1064,6 +1090,8 @@ def create_app(
                     out = _virtual_call_output(
                         engine.resolve_virtual_call(call.get("name", ""), args,
                                                     stubbed_tools=stubbed_tools))
+                    if call.get("name") == "expand_context":
+                        proxy_stats.record_expansion(count_tokens(out, model), model)
                 conv = [*conv, {"type": "function_call_output",
                                 "call_id": call.get("call_id", ""), "output": out}]
 
