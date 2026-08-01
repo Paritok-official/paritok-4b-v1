@@ -135,11 +135,16 @@ class ParitokEngine:
                 upstream_model=upstream_model,
             )
 
-        # 4. Inject virtual tools
+        # 4. Inject virtual tools. read_original is injected ALWAYS (not only once
+        # something has been compressed this turn): the proxy compresses tool results
+        # throughout the session, so the model needs it eventually — and injecting it
+        # only after the first compression flips tools[] mid-session, which invalidates
+        # the prompt-cache prefix (tools + system + all messages) for one expensive
+        # full re-write. Injecting from turn 0 keeps tools[] byte-stable → cache-friendly.
         if tools is not None:
             tools = _inject_virtual_tools(
                 tools,
-                has_compressed=stats.items_compressed > 0,
+                has_compressed=True,
                 has_filtered=stats.tools_kept < stats.tools_original,
             )
 

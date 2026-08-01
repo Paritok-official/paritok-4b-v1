@@ -136,12 +136,23 @@ class ProxyStats:
     def snapshot(self) -> dict:
         """The /stats payload — scoped to what paritok actually intervenes in."""
         orig, comp = self.total_original_tokens, self.total_compressed_tokens
+        # TEMP diagnostic: split saved tokens into file-compression vs tool-filter.
+        c_orig = c_comp = t_orig = t_comp = 0
+        for b in self.by_model.values():
+            c_orig += b["content_first_orig"] + b["content_rest_orig"]
+            c_comp += b["content_first_comp"] + b["content_rest_comp"]
+            t_orig += b["tools_first_orig"] + b["tools_rest_orig"]
+            t_comp += b["tools_first_comp"] + b["tools_rest_comp"]
         return {
             "total_requests": self.requests_processed,
             "input_tokens_original": orig,
             "input_tokens_compressed": comp,
             "compression_ratio": round(comp / orig, 3) if orig else 0.0,
             "tokens_saved": self.total_saved_tokens,
+            "file_compression_saved": c_orig - c_comp,
+            "file_orig": c_orig, "file_comp": c_comp,
+            "tool_filter_saved": t_orig - t_comp,
+            "tool_orig": t_orig, "tool_comp": t_comp,
             "tools_filtered": self.total_tools_filtered,
             "expansions": self.total_expansions,
             "edits_recovered": self.total_edits_recovered,
@@ -306,6 +317,7 @@ def create_app(
         _inject_virtual_tools,
     )
     from paritok.pipelines.edit_recovery import recover_edit, strip_read_line_numbers
+    from paritok.pipelines.codex_edit_recovery import rewrite_function_call_arguments
     from paritok.pipelines.virtual import is_expand_call, is_virtual_tool_call
     from paritok.proxy.adapters import anthropic as anth_adapter
     from paritok.proxy.adapters import openai as oai_adapter
@@ -403,6 +415,22 @@ def create_app(
         url = f"{anthropic_base_url}/v1/messages"
         forward_body = parsed.to_dict()
 
+        import os as _tlos  # TEMP tools[] stability diagnostic; not committed
+        _tlp = _tlos.environ.get("PARITOK_TOOLS_LOG")
+        if _tlp:
+            _tn = [t.get("name") for t in (parsed.tools or [])]
+            _virt = [n for n in _tn if n in ("read_original", "expand_context", "gateway_search_tools")]
+            _nmsg = len(parsed.messages or [])
+            _ttok = _tools_tokens(parsed.tools) if parsed.tools else 0
+            _systok = count_tokens(json.dumps(parsed.system)) if parsed.system else 0
+            _msgtok = count_tokens(json.dumps(parsed.messages)) if parsed.messages else 0
+            _names = {}
+            for _n in _tn:
+                _names[_n] = _names.get(_n, 0) + 1
+            _dups = {k: v for k, v in _names.items() if v > 1}
+            with open(_tlp, "a", encoding="utf-8") as _fh:
+                _fh.write(f"msgs={_nmsg} n_tools={len(_tn)} tools_tok={_ttok} sys_tok={_systok} msg_tok={_msgtok} dups={_dups} virtual={_virt}\n")
+
         if parsed.stream:
             return await _stream_anthropic(url, headers, forward_body, stubbed)
         try:
@@ -452,7 +480,7 @@ def create_app(
         if processed_tools is not None:
             processed_tools = _inject_virtual_tools(
                 processed_tools,
-                has_compressed=stats.items_compressed > 0,
+                has_compressed=True,  # always inject read_original (stable tools[] => cache-friendly)
                 has_filtered=stats.tools_kept < stats.tools_original,
             )
             # Re-wrap; convert the virtual tools' Anthropic `input_schema` to OpenAI
@@ -519,6 +547,10 @@ def create_app(
             stats.tools_original = stats.tools_kept = len(raw_tools)
 
         # Compress function_call_output items (the tool results that grow large).
+        # Also keep each real read body (before compression): the file codex is about to
+        # edit was read earlier in the conversation, so its true bytes live here — that's
+        # what codex_edit_recovery maps a reflowed shell `-replace` back onto.
+        codex_read_bodies: list[str] = []
         for i, item in enumerate(input_items):
             if (item.get("type") == "function_call_output"
                     and isinstance(item.get("output"), str) and item["output"].strip()):
@@ -528,6 +560,8 @@ def create_app(
                 # way regardless of which agent produced it. (Name the local var
                 # `seg_body`, not `body`: `body` is the request dict used below.)
                 header, seg_body = _split_codex_header(item["output"])
+                if len(seg_body) > 40:
+                    codex_read_bodies.append(strip_read_line_numbers(seg_body))
                 # codex reads files without line numbers (out-of-distribution for the
                 # compressor). Feed the model a line-numbered form so it compresses
                 # like every other agent's Read output, but keep `seg_body` (the real,
@@ -546,7 +580,7 @@ def create_app(
         if tools is not None:
             tools = _inject_virtual_tools(
                 tools,
-                has_compressed=stats.items_compressed > 0,
+                has_compressed=True,  # always inject read_original (stable tools[] => cache-friendly)
                 has_filtered=stats.tools_kept < stats.tools_original,
             )
             parsed.tools = [_to_responses_tool(t) for t in tools]
@@ -567,7 +601,7 @@ def create_app(
         forward_body = parsed.to_dict()
 
         if parsed.stream:
-            return await _stream_responses(url, headers, forward_body, stubbed)
+            return await _stream_responses(url, headers, forward_body, stubbed, codex_read_bodies)
         try:
             final_body, status_code, resp_headers = await _responses_resolve(
                 url, headers, forward_body, stubbed
@@ -576,6 +610,7 @@ def create_app(
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        final_body = _recover_codex_edits(final_body, codex_read_bodies)
         return JSONResponse(content=final_body, status_code=status_code, headers=resp_headers)
 
     # ── Stats / Health ──
@@ -676,11 +711,17 @@ def create_app(
         "with a marker like `[REF:<id> src=<path>]` and is followed by a lossy summary "
         "(reformatted, with blank lines / docstrings / some lines dropped) that does NOT "
         "match the real file byte-for-byte. When the summary already covers the step, keep "
-        "going with it. When you need the EXACT original — to read code closely or to EDIT "
-        "it — call `read_original` with the `<id>` and the true file is returned to you. "
-        "Do NOT try to reconstruct the exact file by dumping it with Bash (cat / sed / head "
-        "/ tail) or a fresh Read — those outputs get shrunk again, so you just get the same "
-        "lossy view. `read_original` is the only way to get the true bytes."
+        "going with it. "
+        "To EDIT such a file, just write the Edit straight from the summary — your "
+        "`old_string` does NOT need to match the real bytes exactly. The system "
+        "automatically reconciles your edit against the true file (restoring dropped "
+        "docstrings, comments and exact whitespace), so it applies on the first try. "
+        "Do NOT call read_original merely to make an edit. "
+        "Only call `read_original` with the `<id>` when you must study the exact untouched "
+        "bytes for their own sake (not to edit). "
+        "Do NOT try to reconstruct the file by dumping it with Bash (cat / sed / head / "
+        "tail) or a fresh Read — those outputs get shrunk again, so you just get the same "
+        "lossy view."
     )
 
     def _prepend_ref_guidance(system):
@@ -729,13 +770,18 @@ def create_app(
         return (call_input.get("shadow_id") or call_input.get("id") or "").strip()
 
     def _pin_expanded(ref: str) -> None:
-        """After the model expands a ref, pin its SOURCE FILE so future reads pass through
-        verbatim — the model stops re-expanding the same file every turn."""
-        if not ref:
+        """After the model expands a ref, stop it from being re-compressed (and thus
+        re-expanded) every turn. If the ref has a source PATH (Read/Edit), pin the path
+        so future reads of that file pass through verbatim. Always also pin the CONTENT
+        (shadow_id) itself, so path-less content (Bash / Grep / pytest output — which has
+        no file_path and so can't be pinned by path) is covered too."""
+        import os as _os  # TEMP A/B gate for pin testing; not committed
+        if not ref or _os.environ.get("PARITOK_NO_PIN"):
             return
         src = engine.storage.get_path_for_shadow(ref)
         if src:
             engine.storage.pin_source(src)
+        engine.storage.pin_shadow(ref)
 
     _EDIT_TOOLS = ("Edit", "str_replace", "str_replace_editor")
 
@@ -786,6 +832,34 @@ def create_app(
             proxy_stats.record_edit_recovery()
             logger.info("edit_recovery: rewrote Edit old_string for %s to match the file", fp)
         return message
+
+    def _recover_codex_edits(reply: dict, originals: list[str]) -> dict:
+        """Codex analog of `_recover_edits` for the Responses API. Codex has no Edit tool;
+        it edits by running a shell command that does a literal string replace. When the
+        file read it saw was compressed, the 4B summary reflowed multi-line code onto one
+        line, so codex's `old` no longer matches the real file and the replace is a no-op.
+
+        Rewrite the literal replace(s) inside each shell `function_call` so `old` matches
+        the true file (recovered from `originals` — the real read bodies from this request).
+        Only unique, quote-safe recoveries are spliced; anything else is left as codex sent
+        it (it falls back to its own re-read, exactly as today)."""
+        if not originals:
+            return reply
+        output = reply.get("output")
+        if not isinstance(output, list):
+            return reply
+        for item in output:
+            if not (isinstance(item, dict) and item.get("type") == "function_call"):
+                continue
+            args_raw = item.get("arguments")
+            if not isinstance(args_raw, str):
+                continue
+            new_args, n = rewrite_function_call_arguments(args_raw, originals)
+            if n:
+                item["arguments"] = new_args
+                proxy_stats.record_edit_recovery()
+                logger.info("codex edit_recovery: rewrote a shell replace to match the file")
+        return reply
 
     def _parse_sse_to_message(raw: bytes) -> dict:
         """Reassemble a finished Anthropic message from a buffered SSE byte stream."""
@@ -889,6 +963,17 @@ def create_app(
                                                     stubbed_tools=stubbed_tools))
                     if is_expand_call(call.get("name", "")):
                         proxy_stats.record_expansion(count_tokens(out, model), model)
+                        import os as _dbgos  # TEMP expand-diagnostic; not committed
+                        _dbgp = _dbgos.environ.get("PARITOK_EXPAND_LOG")
+                        if _dbgp:
+                            _src = engine.storage.get_path_for_shadow(ref)
+                            _why = " ".join(
+                                b.get("text", "") for b in reply.get("content", [])
+                                if isinstance(b, dict) and b.get("type") == "text"
+                            ).strip().replace("\n", " ")
+                            with open(_dbgp, "a", encoding="utf-8") as _fh:
+                                _fh.write(f"ref={ref} src={_src} out_tok={count_tokens(out, model)}\n")
+                                _fh.write(f"  WHY: {_why[:600]}\n")
                         _pin_expanded(ref)
                 results.append({"type": "tool_result",
                                 "tool_use_id": call.get("id", ""), "content": out})
@@ -1233,6 +1318,12 @@ def create_app(
                                                     stubbed_tools=stubbed_tools))
                     if is_expand_call(call.get("name", "")):
                         proxy_stats.record_expansion(count_tokens(out, model), model)
+                        import os as _dbgos  # TEMP expand-diagnostic; not committed
+                        _dbgp = _dbgos.environ.get("PARITOK_EXPAND_LOG")
+                        if _dbgp:
+                            _src = engine.storage.get_path_for_shadow(ref)
+                            with open(_dbgp, "a", encoding="utf-8") as _fh:
+                                _fh.write(f"ref={ref} src={_src} out_tok={count_tokens(out, model)}\n")
                         _pin_expanded(ref)
                 conv = [*conv, {"type": "function_call_output",
                                 "call_id": call.get("call_id", ""), "output": out}]
@@ -1332,10 +1423,10 @@ def create_app(
                     final = resp
         return final
 
-    async def _stream_responses(url, headers, body, stubbed_tools):
+    async def _stream_responses(url, headers, body, stubbed_tools, codex_read_bodies=None):
         """Buffer the upstream stream; replay verbatim unless the final response
-        actually contains a virtual tool call, in which case resolve it
-        non-streaming and rebuild the typed-event stream.
+        actually contains a virtual tool call (resolve non-streaming and rebuild the
+        typed-event stream) or a codex shell edit we can reconcile against the real file.
 
         The trigger is a parsed check for a virtual `function_call`, NOT a byte
         scan: the Responses object echoes the request `tools` (so an injected
@@ -1357,8 +1448,17 @@ def create_app(
 
         raw = bytes(collected)
         final = _final_response_from_sse(raw)
-        if final is None or not resp_adapter.find_virtual_function_calls(final):
-            return _sse_stream(raw, status)  # no real virtual call → true pass-through
+        if final is None:
+            return _sse_stream(raw, status)
+
+        if not resp_adapter.find_virtual_function_calls(final):
+            # No virtual call. Still reconcile any codex shell edit against the real file;
+            # rebuild the stream only if we actually rewrote something, else pass through.
+            before = json.dumps(final.get("output"))
+            fixed = _recover_codex_edits(final, codex_read_bodies or [])
+            if json.dumps(fixed.get("output")) != before:
+                return _sse_stream(_responses_to_sse(fixed))
+            return _sse_stream(raw, status)  # true pass-through
 
         try:
             reply, _st, _hd = await _responses_resolve(url, headers, body, stubbed_tools)
@@ -1366,6 +1466,7 @@ def create_app(
             return _sse_stream(raw, status)
         if not reply.get("output"):
             return _sse_stream(raw, status)  # error payload — prefer the raw stream
+        reply = _recover_codex_edits(reply, codex_read_bodies or [])
         return _sse_stream(_responses_to_sse(reply))
 
     # ── Lifespan: clean up http_client on shutdown ──

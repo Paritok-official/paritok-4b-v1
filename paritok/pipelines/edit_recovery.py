@@ -141,7 +141,11 @@ def recover_edit(old_string: str, new_string: str, original: str) -> tuple[str, 
     for m in _LINE_COMMENT.finditer(recovered):
         comment_idx.update(range(m.start(), m.end()))
     if not new_mid[:1].isspace():
-        while pre_byte + 1 < suf_byte and recovered[pre_byte + 1] in " \t":
+        # Reclaim ALL dropped whitespace before the change, including a newline +
+        # indent at a line boundary — matching the suffix side (which uses isspace()).
+        # Restricting this to " \t" glued tokens across a dropped newline, e.g.
+        # `...max_width` + `height =` -> `...max_widthheight =`.
+        while pre_byte + 1 < suf_byte and recovered[pre_byte + 1].isspace():
             pre_byte += 1
     if not new_mid[-1:].isspace():
         while suf_byte > pre_byte + 1 and (

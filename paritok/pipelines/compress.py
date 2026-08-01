@@ -218,6 +218,12 @@ class CompressionPipeline:
         # sid is deterministic (SHA256 of content), same value in cache check and store
         sid = content_hash(content)
 
+        # 3b. Pinned content: the model already expanded this exact content (which has no
+        # source path — e.g. Bash/pytest output), so pass it through VERBATIM instead of
+        # re-compressing it and forcing the model to re-expand it every turn.
+        if self.storage.is_shadow_pinned(sid):
+            return self._skip(content, original_tokens, "pinned_shadow")
+
         # 4. Cache check (idempotent: same content always gets same sid)
         cached = self.storage.get_cached_compressed(sid)
         if cached is not None:

@@ -67,9 +67,9 @@ def _clean_intent(text: str | None) -> str | None:
     return stripped or None
 
 
-def extract_query(messages: list[dict]) -> str | None:
-    """Extract the user's real task text from Anthropic messages, ignoring
-    injected <system-reminder> blocks and tool_result-only turns."""
+def _extract_task(messages: list[dict]) -> str | None:
+    """The user's real task text (the first/only user prompt), ignoring injected
+    <system-reminder> blocks and tool_result-only turns."""
     for msg in reversed(messages):
         if msg.get("role") != "user":
             continue
@@ -86,6 +86,42 @@ def extract_query(messages: list[dict]) -> str | None:
                     if cleaned:
                         return cleaned
     return None
+
+
+def _latest_assistant_reasoning(messages: list[dict]) -> str | None:
+    """The agent's most recent reasoning text (the thinking it emitted alongside its
+    latest tool call). This is the CURRENT intent — what the agent is doing right now —
+    which motivated the newest tool_result we're about to compress."""
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            cleaned = _clean_intent(content)
+            if cleaned:
+                return cleaned
+            continue
+        if isinstance(content, list):
+            texts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()]
+            if texts:
+                cleaned = _clean_intent(" ".join(texts))
+                if cleaned:
+                    return cleaned
+    return None
+
+
+def extract_query(messages: list[dict]) -> str | None:
+    """Compression intent. The 4B keeps what the intent NAMES and drops the rest, so a
+    generic static task prompt ("make the test pass") drops the exact functions the agent
+    is currently digging into. Prefer the agent's LATEST reasoning (current intent) so the
+    compressor keeps the code the agent is working with right now; carry the overall task
+    as trailing context. Falls back to the task alone on turn 0 (no reasoning yet)."""
+    reasoning = _latest_assistant_reasoning(messages)
+    task = _extract_task(messages)
+    if reasoning:
+        return f"{reasoning[:900]}\n(overall task: {task[:200]})" if task else reasoning[:900]
+    return task
 
 
 def extract_tool_results(messages: list[dict]) -> list[tuple[int, int, dict]]:

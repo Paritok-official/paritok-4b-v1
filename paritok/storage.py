@@ -71,6 +71,18 @@ class ShadowStorage(ABC):
     def is_source_pinned(self, path: str) -> bool:
         return False
 
+    def pin_shadow(self, shadow_id: str) -> None:
+        """Pin a specific shadow_id (content hash) so that identical content passes
+        through VERBATIM in future turns instead of being re-compressed. Set after the
+        model expands a ref that has NO source path (e.g. Bash / Grep / pytest output):
+        such content can't be pinned by path, so without this it gets re-compressed and
+        the model re-expands it every turn it needs it. Pinning by content stops that.
+        Default no-op; backends that support it override."""
+        return None
+
+    def is_shadow_pinned(self, shadow_id: str) -> bool:
+        return False
+
 
 class MemoryShadowStorage(ShadowStorage):
     """In-process dict storage. Fast, lost on restart."""
@@ -82,6 +94,7 @@ class MemoryShadowStorage(ShadowStorage):
         self._path_to_shadows: dict[str, list[str]] = {}
         self._shadow_to_path: dict[str, str] = {}
         self._pinned_paths: set[str] = set()
+        self._pinned_shadows: set[str] = set()
 
     def store(self, content: str) -> str:
         sid = content_hash(content)
@@ -123,6 +136,13 @@ class MemoryShadowStorage(ShadowStorage):
 
     def is_source_pinned(self, path: str) -> bool:
         return bool(path) and path in self._pinned_paths
+
+    def pin_shadow(self, shadow_id: str) -> None:
+        if shadow_id:
+            self._pinned_shadows.add(shadow_id)
+
+    def is_shadow_pinned(self, shadow_id: str) -> bool:
+        return bool(shadow_id) and shadow_id in self._pinned_shadows
 
     def get_shadows_for_path(self, path: str) -> list[str]:
         return list(reversed(self._path_to_shadows.get(path, []))) if path else []
