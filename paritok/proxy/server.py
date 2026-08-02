@@ -386,6 +386,55 @@ def create_app(
         body = json.loads(await request.body())
         parsed = anth_adapter.parse_request(body)
 
+        import os as _reqos  # TEMP request-descriptor + passthrough diagnostics; not committed
+        _reqp = _reqos.environ.get("PARITOK_REQ_LOG")
+        if _reqp:
+            _msgs = body.get("messages", []) or []
+            _last = _msgs[-1] if _msgs else {}
+            _lc = _last.get("content")
+            _kinds = ([b.get("type") for b in _lc if isinstance(b, dict)]
+                      if isinstance(_lc, list) else [type(_lc).__name__])
+            _sys = body.get("system")
+            _syslen = len(json.dumps(_sys)) if _sys is not None else 0
+            with open(_reqp, "a", encoding="utf-8") as _fh:
+                _fh.write(f"model={str(body.get('model',''))[:26]} nmsg={len(_msgs)} "
+                          f"last_role={_last.get('role')} last_kinds={_kinds} "
+                          f"max_tokens={body.get('max_tokens')} syslen={_syslen}\n")
+        # True passthrough: forward the client's request byte-for-byte (no compression,
+        # no tool injection, no guidance) — measures the paritok relay overhead alone.
+        if _reqos.environ.get("PARITOK_PASSTHROUGH"):
+            headers = _forward_headers(request)
+            _capp = _reqos.environ.get("PARITOK_CAPTURE")
+            if _capp and len(body.get("messages", []) or []) >= 4:
+                import os as _cos
+                if not _cos.path.exists(_capp + ".body.json"):
+                    with open(_capp + ".body.json", "w", encoding="utf-8") as _fh:
+                        json.dump(body, _fh)
+                    with open(_capp + ".headers.json", "w", encoding="utf-8") as _fh:
+                        json.dump(dict(request.headers), _fh)
+                    with open(_capp + ".fwdheaders.json", "w", encoding="utf-8") as _fh:
+                        json.dump(headers, _fh)
+            # Surgical diagnostic: drop all but core coding tools from the forwarded
+            # request (nothing else changed) — isolates whether the +16.8k/turn is tools.
+            _strip = _reqos.environ.get("PARITOK_STRIP_TOOLS")
+            if _strip and isinstance(body.get("tools"), list):
+                _core = {"Read", "Edit", "Bash", "Glob", "Grep", "Write", "PowerShell",
+                         "MultiEdit", "NotebookEdit", "TodoWrite", "Task"}
+                body = {**body, "tools": [t for t in body["tools"] if t.get("name") in _core]}
+            url = f"{anthropic_base_url}/v1/messages"
+            if parsed.stream:
+                if _reqos.environ.get("PARITOK_PASSTHROUGH") == "raw":
+                    # PURE raw stream: never buffer/reconstruct — truest possible relay.
+                    async def _raw_stream():
+                        async with http_client.stream("POST", url, headers=headers, json=body) as r:
+                            async for chunk in r.aiter_bytes():
+                                yield chunk
+                    return StreamingResponse(_raw_stream(), media_type="text/event-stream")
+                return await _stream_anthropic(url, headers, body, [])
+            resp = await http_client.post(url, headers=headers, json=body)
+            return JSONResponse(content=resp.json(), status_code=resp.status_code,
+                                headers=_relay_headers(resp))
+
         # Use shared engine for compression + tool discovery
         client_tools = parsed.tools  # the caller's full tool schemas, pre-stub
         parsed.messages, parsed.tools, stats, stubbed = engine.process_request(
@@ -414,6 +463,22 @@ def create_app(
         headers = _forward_headers(request)
         url = f"{anthropic_base_url}/v1/messages"
         forward_body = parsed.to_dict()
+
+        import os as _szos  # TEMP in-vs-out size diagnostic; not committed
+        _szp = _szos.environ.get("PARITOK_SIZE_LOG")
+        if _szp:
+            _m = body.get("model", "")
+            _in = (count_tokens(json.dumps(body.get("messages", [])), _m)
+                   + count_tokens(json.dumps(body.get("system", "")), _m)
+                   + count_tokens(json.dumps(body.get("tools", [])), _m))
+            _out = (count_tokens(json.dumps(forward_body.get("messages", [])), _m)
+                    + count_tokens(json.dumps(forward_body.get("system", "")), _m)
+                    + count_tokens(json.dumps(forward_body.get("tools", [])), _m))
+            _cc_in = json.dumps(body).count("cache_control")
+            _cc_out = json.dumps(forward_body).count("cache_control")
+            with open(_szp, "a", encoding="utf-8") as _fh:
+                _fh.write(f"req#{proxy_stats.requests_processed} IN={_in} OUT={_out} "
+                          f"delta={_out - _in} cache_control_in={_cc_in} out={_cc_out}\n")
 
         import os as _tlos  # TEMP tools[] stability diagnostic; not committed
         _tlp = _tlos.environ.get("PARITOK_TOOLS_LOG")
@@ -545,6 +610,14 @@ def create_app(
             stats.tools_kept = result.kept_count
         elif raw_tools:
             stats.tools_original = stats.tools_kept = len(raw_tools)
+
+        import os as _tnos  # TEMP codex tool-filter diagnostic; not committed
+        if _tnos.environ.get("PARITOK_CODEXTOOLS_LOG") and raw_tools:
+            def _nm(t): return t.get("name") or (t.get("function") or {}).get("name")
+            with open(_tnos.environ["PARITOK_CODEXTOOLS_LOG"], "a", encoding="utf-8") as _fh:
+                _fh.write(f"IN({len(raw_tools)})={[_nm(t) for t in raw_tools]} "
+                          f"KEPT({len(tools)})={[_nm(t) for t in tools]} "
+                          f"STUBBED={[_nm(t) for t in stubbed]}\n")
 
         # Compress function_call_output items (the tool results that grow large).
         # Also keep each real read body (before compression): the file codex is about to
@@ -1010,6 +1083,19 @@ def create_app(
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
 
         raw = bytes(collected)
+        import os as _uos  # TEMP per-request upstream-usage diagnostic; not committed
+        _up = _uos.environ.get("PARITOK_USAGE_LOG")
+        if _up:
+            try:
+                _u = (_parse_sse_to_message(raw).get("usage") or {})
+                with open(_up, "a", encoding="utf-8") as _fh:
+                    _fh.write(f"req#{proxy_stats.requests_processed} "
+                              f"in={_u.get('input_tokens')} "
+                              f"cache_cr={_u.get('cache_creation_input_tokens')} "
+                              f"cache_rd={_u.get('cache_read_input_tokens')} "
+                              f"out={_u.get('output_tokens')}\n")
+            except Exception:
+                pass
         has_virtual = any(marker in raw for marker in _VIRTUAL_MARKERS)
         has_edit = any(f'"{t}"'.encode() in raw for t in _EDIT_TOOLS)
         if not has_virtual and not has_edit:
@@ -1448,6 +1534,17 @@ def create_app(
 
         raw = bytes(collected)
         final = _final_response_from_sse(raw)
+        import os as _ruos  # TEMP per-request responses-usage diagnostic; not committed
+        _rup = _ruos.environ.get("PARITOK_RESP_USAGE_LOG")
+        if _rup and final:
+            _u = final.get("usage") or {}
+            _itd = (_u.get("input_tokens_details") or {})
+            _cached = _itd.get("cached_tokens", 0)
+            _ti = _u.get("input_tokens", 0)
+            _ninp = len(body.get("input", []) or [])
+            with open(_rup, "a", encoding="utf-8") as _fh:
+                _fh.write(f"input_items={_ninp} in={_ti} cached={_cached} "
+                          f"uncached={_ti - _cached} out={_u.get('output_tokens', 0)}\n")
         if final is None:
             return _sse_stream(raw, status)
 

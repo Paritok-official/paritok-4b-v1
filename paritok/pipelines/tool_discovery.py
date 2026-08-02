@@ -14,6 +14,14 @@ from dataclasses import dataclass
 
 from paritok.config import ParitokConfig
 
+# An agent's core execution tools — its only means to actually DO anything (run a
+# command, edit a file). These must NEVER be stubbed by tool discovery: agents like
+# codex expose only ~9 tools and shell/exec is the one they can't work without.
+_CORE_EXEC_TOOLS = frozenset({
+    "shell", "shell_command", "local_shell", "container.exec", "exec", "bash",
+    "apply_patch", "run_terminal_cmd", "str_replace_editor", "editor",
+})
+
 # Common English stopwords to ignore during keyword matching
 _STOPWORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -177,6 +185,13 @@ class ToolDiscoveryPipeline:
 
         sid = session_id or query or "default"
         keep_ordered = predict_topk_frozen(sid, query, tools)
+        # Never stub an agent's core execution tool: codex/others expose only a handful
+        # of tools and shell/exec is their ONLY way to act — if the embedding ranks it out
+        # of top-k the agent is left unable to run anything (it falls back to asking the
+        # user / web search). Force-keep it regardless of semantic rank.
+        for t in tools:
+            if _tool_name(t) in _CORE_EXEC_TOOLS and _tool_name(t) not in keep_ordered:
+                keep_ordered = [*keep_ordered, _tool_name(t)]
         keep_names = set(keep_ordered)
         if getattr(cfg, "adaptive", True):
             new_tools = apply_selection_adaptive(
