@@ -209,8 +209,26 @@ class CompressionPipeline:
         # sid is deterministic (SHA256 of content), same value in cache check and store
         sid = content_hash(content)
 
-        # 4. Cache check (idempotent: same content always gets same sid)
-        cached = self.storage.get_cached_compressed(sid)
+        # The model is fed model_input when supplied, so kind must be classified
+        # from the same text. Doing it here rather than at step 5 lets the cache
+        # key carry the resolved kind instead of the caller's None.
+        model_text = model_input if model_input is not None else content
+        if kind is None:
+            kind = classify_kind_from_content(model_text)
+
+        # The compressed result depends on query, level and kind as well as on the
+        # content -- query is documented as driving keep/drop -- so all four belong
+        # in the key. Keying on content alone returned the first caller's answer to
+        # every later caller: a different intent and a different level came back
+        # byte-identical, with cache_hit=True and nothing to say which intent
+        # produced it. `sid` deliberately stays content-only, because expand_context
+        # resolves originals by content and that behaviour is correct.
+        cache_key = content_hash(
+            "\x00".join([sid, level or "", kind or "", query or ""])
+        )
+
+        # 4. Cache check (same content AND same intent gets the same answer)
+        cached = self.storage.get_cached_compressed(cache_key)
         if cached is not None:
             if source:
                 self.storage.set_shadow_for_path(source, sid)
@@ -223,15 +241,11 @@ class CompressionPipeline:
                 metadata={"cache_hit": True},
             )
 
-        # 5. Call model (SEG protocol: intent + kind + level). Feed model_input when
-        # given (e.g. line-numbered form) — content still governs everything else.
-        model_text = model_input if model_input is not None else content
-        # Classify kind centrally so every backend receives a real kind. Without
-        # this only LocalModelStrategy sniffs it internally; GpuServerStrategy would
-        # forward kind=None to the server. Classify on model_text (what the model
-        # actually sees), matching the local fallback.
-        if kind is None:
-            kind = classify_kind_from_content(model_text)
+        # 5. Call model (SEG protocol: intent + kind + level). model_text and kind
+        # are resolved above, before the cache key is built, so that every backend
+        # receives a real kind and the key reflects it. Without central
+        # classification only LocalModelStrategy sniffs kind internally;
+        # GpuServerStrategy would forward kind=None to the server.
         compressed = self._model.compress(
             model_text,
             query=query,
@@ -255,7 +269,7 @@ class CompressionPipeline:
             self.storage.set_shadow_for_path(source, sid)
         else:
             tagged = f"[REF:{sid}] {compressed}"
-        self.storage.cache_compressed(sid, tagged)
+        self.storage.cache_compressed(cache_key, tagged)
 
         tagged_tokens = count_tokens(tagged, enc)
 
