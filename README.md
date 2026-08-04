@@ -4,11 +4,18 @@
 <p align="center">Paritok sits between your agent and the LLM as a drop-in proxy. On every request it strips the tool-schema bloat, compresses tool results and file reads, and summarizes stale history — then forwards upstream, billed on the compressed tokens. Nothing is ever permanently discarded: the agent pulls back any exact original on demand. Works with <b>Claude Code, Cursor, Codex, OpenHands</b>, and any agent that honors <code>BASE_URL</code> — <b>you don't change a line of your agent</b>.<br/><br/>Powered by the <b>first open-source 4B compression model trained specifically for coding agents</b> (45K real trajectories). <b>~74% fewer tokens on typical workloads</b>, and savings <b>compound the longer a session runs</b>.</p>
 
 <p align="center">
+  <img src="./photo.png" alt="Paritok compression: 15,000 tokens shrunk to 3,850 tokens with semantics intact" width="820"/>
+</p>
+
+<p align="center">
   <a href="https://huggingface.co/paritok/paritok-4b-v1">
     <img src="https://img.shields.io/badge/🤗%20Model-HuggingFace-yellow" alt="HF Model"/>
   </a>
   <a href="./LICENSE">
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="License"/>
+  </a>
+  <a href="https://discord.gg/SeBJE5Eucp">
+    <img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"/>
   </a>
   <img src="https://img.shields.io/badge/backbone-Qwen3--4B-purple" alt="Qwen3-4B"/>
   <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python"/>
@@ -108,7 +115,7 @@ So the 4.6% / 22.2% above is the **floor** (content only). Against a real no-Par
 
 > **Honest cap:** the quadratic doesn't run forever — the LLM's context window (~200K) bounds it. In practice the curve flattens around turn ~12–20 as the window fills. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the window** — Paritok effectively buys back context length.
 
-**One line:** *read more, save more* — compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions); a short single-turn Q&A is where it's least useful.
+**One line:** *use more, save more* — compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions).
 
 ---
 
@@ -440,6 +447,7 @@ Apache 2.0 — see [LICENSE](./LICENSE). The base model, Qwen3-4B-Instruct-2507,
 
 ## 💬 Community & Support
 
+- 👥 **Join the community** → [Discord](https://discord.gg/SeBJE5Eucp)
 - 🐛 **Bug reports & feature requests** → [GitHub Issues](https://github.com/Paritok-official/paritok-4b-v1/issues)
 - 💭 **Discussion** → [🤗 HF Model discussions](https://huggingface.co/paritok/paritok-4b-v1/discussions)
 - 📧 **Contact** → [paritok9@gmail.com](mailto:paritok9@gmail.com)
