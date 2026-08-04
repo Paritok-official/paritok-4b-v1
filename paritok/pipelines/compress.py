@@ -270,6 +270,11 @@ class CompressionPipeline:
         else:
             tagged = f"[REF:{sid}] {compressed}"
         self.storage.cache_compressed(cache_key, tagged)
+        # The path short-circuit (step 1b) intentionally reuses a prior [REF]
+        # tag for re-reads of the same source regardless of intent, and it
+        # looks the tag up by the content-only sid. Index the result there too,
+        # otherwise every re-read after this fix misses and re-invokes the model.
+        self.storage.cache_compressed(sid, tagged)
 
         tagged_tokens = count_tokens(tagged, enc)
 
