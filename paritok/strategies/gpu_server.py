@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass
+from enum import Enum
 
 from paritok.config import GpuServerConfig
 
@@ -34,6 +36,41 @@ logger = logging.getLogger("paritok.gpu_server")
 # cold-starting / rebooting — tell the user in the proxy console so a slow first
 # request doesn't look like a hang.
 _REBOOT_NOTICE_AFTER_S = 30.0
+
+
+class Outcome(str, Enum):
+    """Why `compress()` returned what it returned.
+
+    Today all four of these arrive as `str`, and three of them arrive as the
+    caller's own content, so no caller can tell them apart. See #20.
+    """
+
+    COMPRESSED = "compressed"    # a real compressed body
+    IRRELEVANT = "irrelevant"    # complete response, empty body: nothing here is
+                                 # relevant to `query`. NOT a failure.
+    UNAVAILABLE = "unavailable"  # GPU offline, key rejected, or transport failed
+    MALFORMED = "malformed"      # response arrived but could not be trusted
+
+
+@dataclass(frozen=True)
+class CompressionResult:
+    """A compression outcome that is safe to branch on.
+
+    `content` is always safe to send upstream: the compressed body when there is
+    one, and the caller's original otherwise. Callers that do not care can keep
+    using `compress()` and never see this type.
+    """
+
+    outcome: Outcome
+    content: str
+    detail: str = ""
+
+    @property
+    def is_compressed(self) -> bool:
+        return self.outcome is Outcome.COMPRESSED
+
+    def __str__(self) -> str:  # so existing f-string / concat callers still work
+        return self.content
 
 
 class GpuServerStrategy:
@@ -55,6 +92,35 @@ class GpuServerStrategy:
         **kwargs,
     ) -> str:
         """Compress via the hosted endpoint; return the original on any failure.
+
+        Unchanged surface for every existing caller. The one behaviour change is
+        the fix for #20: an empty compressed body no longer reaches the pipeline
+        as an empty string that silently destroys a tool result -- the original
+        is returned instead. Callers that want to *act* on that signal should use
+        `compress_result()` and check `outcome is Outcome.IRRELEVANT`.
+        """
+        return self.compress_result(
+            content,
+            query=query,
+            level=level,
+            kind=kind,
+            target_ratio=target_ratio,
+            system_prompt=system_prompt,
+            **kwargs,
+        ).content
+
+    def compress_result(
+        self,
+        content: str,
+        *,
+        query: str | None = None,
+        level: str | None = None,
+        kind: str | None = None,
+        target_ratio: str | None = None,
+        system_prompt: str | None = None,
+        **kwargs,
+    ) -> CompressionResult:
+        """Compress, and say which of the four things actually happened.
 
         The remote server owns chunking / SEG formatting, so we hand it the whole
         segment plus the intent and read back the compressed body.
@@ -103,7 +169,9 @@ class GpuServerStrategy:
             # once and pass the content through uncompressed (don't spam per call).
             if resp.status_code in (401, 403):
                 self._warn_invalid_key_once(resp.status_code)
-                return content
+                return CompressionResult(
+                    Outcome.UNAVAILABLE, content, f"HTTP {resp.status_code}: key rejected"
+                )
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:  # noqa: BLE001 — any failure degrades to passthrough
@@ -111,22 +179,40 @@ class GpuServerStrategy:
                 "GPU server compression unavailable (%s); passing content through "
                 "uncompressed.", e,
             )
-            return content
+            return CompressionResult(Outcome.UNAVAILABLE, content, str(e))
         finally:
             reboot_timer.cancel()
 
         if not data.get("gpu_available", False):
             # Endpoint is up but the GPU backend is offline — it echoed the
             # original back. Keep the original; no compression happened.
-            return content
+            return CompressionResult(Outcome.UNAVAILABLE, content, "gpu_available: false")
         compressed = data.get("compressed")
         if not isinstance(compressed, str):
-            return content
+            return CompressionResult(
+                Outcome.MALFORMED, content, f"compressed was {type(compressed).__name__}"
+            )
+
+        # An empty body on an OTHERWISE COMPLETE response is a verdict, not a
+        # failure: the model was asked whether this segment relates to `query`
+        # and answered no. We only get here after resp.json() parsed a whole
+        # object, so the response is known-complete -- a torn stream raises above
+        # and lands in UNAVAILABLE instead. Fixes #20: the caller never receives
+        # an empty string as if it were a summary.
+        if not compressed.strip():
+            return CompressionResult(Outcome.IRRELEVANT, content, "empty body, response complete")
+
         # Defensive: the hosted server already unwraps SEG tags, but a truncated
         # closing tag can leak a stray opening [SEG ...] marker. Re-unwrap here so
         # the proxy's output is clean and identical regardless of that hiccup.
         from paritok.strategies.local_model import _unwrap_seg
-        return _unwrap_seg(compressed)
+        body = _unwrap_seg(compressed)
+        if not body.strip():
+            # Unwrapping consumed everything: the wrapper was unbalanced, which
+            # is what a num_predict-truncated generation looks like. Do not
+            # present that as a compression.
+            return CompressionResult(Outcome.MALFORMED, content, "SEG unwrap produced an empty body")
+        return CompressionResult(Outcome.COMPRESSED, body)
 
     def check(self) -> tuple[bool, str]:
         """Probe {base_url}/test WITH the API key. Returns (available, message).
