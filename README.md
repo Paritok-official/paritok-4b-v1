@@ -39,7 +39,7 @@
 - **2026-07-31** &nbsp; **v1.3.0** — stability release: edit-recovery, `read_original` API rename (from `expand_context`).
 - **2026-07-19** &nbsp; **v1.2.0** ships the embedding-based tool filter — the biggest single-turn lever (~29K → ~8K on a typical Claude Code turn), unlocking prompt-cache-friendly tool selection with `gateway_search_tools` recall.
 - **2026-07-15** &nbsp; **Paritok gateway v1.0.0** open-sourced — the proxy/middleware that turns the 4B model into a drop-in Claude Code / Cursor / Codex compression layer.
-- **2026-07-14** &nbsp; **Paritok-4B-v1** released on Hugging Face Hub with full SWE-bench Verified end-to-end evaluation.
+- **2026-07-14** &nbsp; **Paritok-4B-v1** released on Hugging Face Hub with full SWE-bench Lite end-to-end evaluation.
 - **2026-06-25** &nbsp; Finished training. 45K teacher-distilled samples on the Qwen3-4B backbone.
 
 ---
@@ -365,11 +365,11 @@ The gateway's content compression is powered by **Paritok-4B-v1**, the first ope
 
 - 🎨 **Code-native.** Trained on real coding-agent trajectories (`file_read`, `bash_command`, `log_output`, …). It knows what an import statement is worth vs a debug line, so it protects function names, paths, and error strings while compressing.
 - 🚀 **Compresses each segment to 25.7%** of original — **2× harder than gpt-4.1-mini** (50.2% CR) and **2.4× harder than gpt-5** (61.9% CR).
-- 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Verified — matching gpt-4.1-mini as compressor at **less than half the token spend**.
+- 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Lite — matching gpt-4.1-mini as compressor at **less than half the token spend**.
 - 🪶 **Small & self-hostable** — 4B LoRA adapter, bf16, runs on a single 24GB GPU. No SaaS, no lock-in, no per-token compressor fee.
 - 🔓 **Fully open** — Apache 2.0 weights, reproducible data pipeline, real end-to-end SWE-bench numbers.
 
-### Benchmark: SWE-bench Verified
+### Benchmark: SWE-bench Lite
 
 Real end-to-end evaluation. An agent scaffold receives its context through each compressor, then attempts to resolve the issue. Primary metric is **quality retained** (solve rate normalized to the uncompressed baseline).
 
@@ -391,7 +391,7 @@ Real end-to-end evaluation. An agent scaffold receives its context through each 
 | **Trained on real coding-agent trajectories**  |     ✅            |     ❌       |         ❌          |
 | **Preserves function names / imports / paths** | ✅ (by design)    |   partial    |     partial         |
 | **Compression rate** (lower = harder)          |  **25.7%** ⭐    |    ~40%      |       50.2%         |
-| **SWE-bench Verified — quality retained**      |  **86.5%** ⭐    | not evaluated|       85.6%         |
+| **SWE-bench Lite — quality retained**          |  **86.5%** ⭐    | not evaluated|       85.6%         |
 | **Self-hostable open weights**                 |    Apache 2.0     |     MIT      |    closed API       |
 | **Per-token compressor fee**                   |  zero (self-host) |  zero (open) |  pay-per-token      |
 
@@ -402,7 +402,7 @@ Real end-to-end evaluation. An agent scaffold receives its context through each 
 | **Base model**         | [Qwen/Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507)        |
 | **Adapter type**       | LoRA, r=32, α=64, dropout=0.0                                                            |
 | **Target modules**     | `q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`                          |
-| **Training steps**     | 2000 (selected from a 5-checkpoint sweep, best on SWE-bench Verified subset)             |
+| **Training steps**     | 2000 (selected from a 5-checkpoint sweep, best on SWE-bench Lite subset)                 |
 | **Training precision** | bf16                                                                                     |
 | **Max seq length**     | 16,384                                                                                   |
 | **Dataset size**       | 45,000 samples across `file_read`, `bash_command`, `log_output`, etc.                    |
@@ -427,7 +427,7 @@ python data_pipeline/compress/compress_pool_other.py
 bash deploy_sft_4b.sh
 ```
 
-Pipeline: data collection (100k+ raw turns) → segmentation into `[SEG]` blocks by kind → teacher distillation (gpt-4.1-mini) → filter & rebalance → LoRA SFT on Qwen3-4B → checkpoint selection on SWE-bench Verified.
+Pipeline: data collection (100k+ raw turns) → segmentation into `[SEG]` blocks by kind → teacher distillation (gpt-4.1-mini) → filter & rebalance → LoRA SFT on Qwen3-4B → checkpoint selection on SWE-bench Lite.
 
 ---
 
