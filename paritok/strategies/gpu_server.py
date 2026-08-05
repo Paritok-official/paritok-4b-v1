@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import threading
 
+from paritok import __version__
 from paritok.config import GpuServerConfig
 
 logger = logging.getLogger("paritok.gpu_server")
@@ -34,6 +35,17 @@ logger = logging.getLogger("paritok.gpu_server")
 # cold-starting / rebooting — tell the user in the proxy console so a slow first
 # request doesn't look like a hang.
 _REBOOT_NOTICE_AFTER_S = 30.0
+
+# Sent on every hosted request. Two reasons this is explicit rather than left to
+# the HTTP client's default:
+#
+# 1. The endpoint rejects some default agents. `urllib.request` -- the obvious
+#    choice for a dependency-free repro script -- gets HTTP 403 with no body, and
+#    403 is also what a rejected API key returns, so `_warn_invalid_key_once()`
+#    fires and tells the user their key is bad when it is fine.
+# 2. Hosted traffic becomes attributable to a client and version without the
+#    server having to guess.
+_USER_AGENT = f"paritok/{__version__} (+https://github.com/Paritok-official/paritok-4b-v1)"
 
 
 class GpuServerStrategy:
@@ -80,7 +92,7 @@ class GpuServerStrategy:
         upstream_model = kwargs.get("upstream_model")
         if upstream_model:
             payload["upstream_model"] = upstream_model
-        headers = {}
+        headers = {"User-Agent": _USER_AGENT}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
@@ -146,7 +158,7 @@ class GpuServerStrategy:
                 "(pip install paritok[llm])."
             )
 
-        headers = {}
+        headers = {"User-Agent": _USER_AGENT}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
