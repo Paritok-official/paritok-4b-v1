@@ -153,7 +153,17 @@ Plugging these formulas into a range of N (baseline ~96,500 tokens/turn), **capp
 | 15 | 548,150 | 315,000 | 863,150   | 1,447,500 | **60%** |
 | 20 | 788,150 | 420,000 | 1,208,150 | 1,930,000 | **63%** |
 
-<sub>**Capped at the ~200K context window.** The quadratic only holds while history is still growing. Once the accumulated context fills the window (around turn ~8–12 here), client-side compaction holds it flat, per-turn content saving stops growing (freezes at ~48K/turn), and **% saved plateaus toward the ~72–74% content-rate ceiling instead of diverging**. Turns 1–5 match the measured tables above; later rows are in-window projections.</sub>
+<sub>**Capped at the ~200K context window.** The quadratic only holds while history is still growing. Once the accumulated context fills the window (around turn ~8–12 here), client-side compaction holds it flat, per-turn content saving stops growing (freezes at ~48K/turn), and **% saved plateaus toward the ~72% default ceiling instead of diverging**. Turns 1–5 match the measured tables above; later rows are in-window projections.</sub>
+
+**Ceilings shift with deployment shape:**
+
+| Deployment scenario                              | Baseline / turn | Ceiling % saved |
+| ------------------------------------------------ | :-------------: | :-------------: |
+| Default (~40 tools, moderate reads)              | 96,500          | **~72%**        |
+| MCP-heavy (70+ tools)                            | 127,500         | **~78%**        |
+| Context-saturated (no-Paritok forced to compact) | ~200,000        | **~85%+**       |
+
+<sub>The projection above uses the default ceiling. MCP-heavy setups earn a bigger per-turn tool-filter cut; context-saturated sessions get an even larger effective saving because they're now compared against a compacted, information-lossy baseline.</sub>
 
 > **Honest cap:** the quadratic doesn't run forever — the LLM's context window (~200K) bounds it. In practice the curve flattens around turn ~12–20 as the window fills. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the window** — Paritok effectively buys back context length.
 
@@ -173,7 +183,7 @@ The **74%** figure is Paritok's **content compression rate** — file reads, too
 | Startup, 1-month project (20d × 400 turns)       |    $360      | ~$252 (save $108)     | ~$180 (save $180)    | ~$90 (**save $270**)       |
 | 10-person team, 3-month project (60d × 10 × 500) |   $13,500    | ~$9.5K (save $4K)     | ~$6.7K (save $6.7K)  | ~$3.4K (**save $10K**)     |
 
-<sub>Turn size assumed ~15K. Session-length reference: edit-heavy ~1-3 turns, mixed ~5-10 turns, read-heavy ~15+ turns. See the compounding table above for the turn-by-turn breakdown.</sub>
+<sub>Turn size assumed ~15K. Session-length reference: edit-heavy ~1-3 turns, mixed ~5-10 turns, read-heavy ~15+ turns. **Read-heavy (~75%) reflects typical MCP-heavy deployments (~78% ceiling); the default ~40-tool projection tops out at ~72%.** See the compounding table above for the turn-by-turn breakdown, and the deployment-scenarios table for how the ceiling shifts with tool count and session saturation.</sub>
 
 Deployment overhead pays for itself in **days**, not weeks — and there's no lock-in: it's your own 4B model on your own hardware.
 
