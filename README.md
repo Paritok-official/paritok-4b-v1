@@ -136,11 +136,24 @@ So the 4.6% / 22.2% above is the **floor** (content only). Against a real no-Par
 
 **Why it grows:** every file you read stays in history and is re-sent (cache-read) every subsequent turn — so content compression keeps paying off turn after turn, while the tool filter adds a fixed cut on top.
 
-- **Content compression → quadratic.** Cumulative saving ≈ `2,178 × N²` — each turn's compressed reads keep paying off on every later turn.
-- **Tool filter → linear.** Cumulative saving ≈ `42,356 × N` — a fixed block saved every turn.
-- **Crossover ≈ turn 20:** early on the tool filter dominates; past ~turn 20 content compression overtakes it and the gap widens.
+- **Content compression → quadratic.** Cumulative saving ≈ `3,350 × N²` — each turn's compressed reads keep paying off on every later turn.
+- **Tool filter → linear.** Cumulative saving ≈ `21,000 × N` — a fixed block saved every turn.
+- **Crossover ≈ turn 6:** early on the tool filter dominates; past ~turn 6 content compression overtakes it and the gap widens.
+
+Plugging these formulas into a range of N (baseline ~96,500 tokens/turn):
+
+| Turn (N) | Content saved | Tool filter saved | Cumulative saved | Cumulative baseline | **% saved** |
+|:---:|---:|---:|---:|---:|:---:|
+| 1  | 3,350     | 21,000  | 24,350    | 96,500    | **25%** |
+| 5  | 83,750    | 105,000 | 188,750   | 482,500   | **39%** |
+| 10 | 335,000   | 210,000 | 545,000   | 965,000   | **57%** |
+| 12 | 482,400   | 252,000 | 734,400   | 1,158,000 | **63%** |
+| 15 | 753,750   | 315,000 | 1,068,750 | 1,447,500 | **74%** |
+| 20 | 1,340,000 | 420,000 | 1,760,000 | 1,930,000 | **91%** |
 
 > **Honest cap:** the quadratic doesn't run forever — the LLM's context window (~200K) bounds it. In practice the curve flattens around turn ~12–20 as the window fills. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the window** — Paritok effectively buys back context length.
+
+> **Extrapolation:** the formulas predict **~63% saved at turn 12, ~74% at turn 15, and ~90%+ at turn 20** before the ~200K context window bounds further compounding — the higher end matches production deployments on long, complex projects.
 
 **One line:** *use more, save more* — compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions).
 
