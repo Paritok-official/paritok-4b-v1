@@ -42,6 +42,7 @@ class GpuServerStrategy:
     def __init__(self, config: GpuServerConfig):
         self.config = config
         self._key_warned = False  # warn about a rejected API key only once
+        self._level_warned = False  # warn once that hosted ignores `level`
 
     def compress(
         self,
@@ -66,6 +67,9 @@ class GpuServerStrategy:
                 "httpx is required for the gpu_server strategy. "
                 "Install with: pip install paritok[llm]"
             )
+
+        if level is not None:
+            self._warn_level_ignored_once(level)
 
         payload = {
             "model": self.config.model,
@@ -181,6 +185,26 @@ class GpuServerStrategy:
                 "Compression will pass through uncompressed."
             )
         return bool(data.get("gpu_available", False)), str(data.get("message", ""))
+
+    def _warn_level_ignored_once(self, level: str) -> None:
+        """Say once that `level` does nothing on the hosted backend.
+
+        The parameter is accepted, serialised into the payload and sent, and the
+        hosted endpoint ignores it (maintainer, #3). Nothing on either side says
+        so, so a caller implementing an L2 -> L1 -> L0 fallback ladder gets the
+        same output at every rung and reasonably concludes their own logic is
+        wrong. Silence here costs debugging time that the one-line warning does
+        not.
+        """
+        if self._level_warned:
+            return
+        self._level_warned = True
+        logger.warning(
+            "level=%r was passed, but the hosted backend ignores it (see "
+            "Paritok-official/paritok-4b-v1#3); every level returns the same "
+            "output. Use the self-hosted backend if you need the level dial.",
+            level,
+        )
 
     def _warn_invalid_key_once(self, status: int) -> None:
         """Print a one-time console warning when the hosted endpoint rejects our
