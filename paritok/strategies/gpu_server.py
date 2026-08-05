@@ -182,6 +182,58 @@ class GpuServerStrategy:
             )
         return bool(data.get("gpu_available", False)), str(data.get("message", ""))
 
+    # A canary that is verifiably irrelevant to the query it is sent with. The
+    # hosted model returns an empty body for content unrelated to `query`, so a
+    # NON-empty reply here means relevance filtering is not running -- which is
+    # exactly the state /test does not report.
+    _CANARY = (
+        '"""ASCII banner helpers."""\nimport shutil\n\n\n'
+        "def terminal_width(default=80):\n"
+        "    try:\n        return shutil.get_terminal_size().columns\n"
+        "    except OSError:\n        return default\n\n\n"
+        "def render_banner(text, char='=', padding=2):\n"
+        "    width = terminal_width()\n"
+        "    inner = ' ' * padding + text + ' ' * padding\n"
+        "    return char * 4 + inner + char * 4\n"
+    ) * 3
+    _CANARY_QUERY = "fix the refund amount validation in payments/refund.py"
+
+    def verify(self) -> tuple[bool, str]:
+        """Is the backend actually COMPRESSING, as opposed to merely reachable?
+
+        `check()` asks /test, and /test has been observed reporting
+        `gpu_available: true` while /compress returned `gpu_available: false` and
+        passed every request through uncompressed (reproduced 5 times over 35
+        minutes). Startup therefore reports healthy, and the user's traffic is
+        silently uncompressed with no error anywhere -- the worst shape a failure
+        can take, because it is invisible and it inflates cost rather than
+        breaking anything.
+
+        This probes /compress itself with a canary that is irrelevant to the query
+        it is sent with, and reports what actually came back. It costs one small
+        request and is the only answer that cannot be contradicted by the endpoint
+        it is describing.
+        """
+        try:
+            import httpx  # noqa: F401
+        except ImportError:
+            return False, "httpx is required for the gpu_server strategy."
+
+        out = self.compress(self._CANARY, query=self._CANARY_QUERY)
+        if not out.strip():
+            return True, "compressing: canary irrelevant to the query returned empty"
+        # Compared stripped: compress() routes the body through _unwrap_seg(),
+        # which trims, so a byte-for-byte passthrough comes back one character
+        # shorter than it went out and an `==` here silently misses it.
+        if out.strip() == self._CANARY.strip():
+            return False, (
+                "NOT compressing: the canary came back byte-identical. The endpoint "
+                "is reachable but passing content through uncompressed -- the state "
+                "/test does not report. Treat any savings from this session as "
+                "unmeasured."
+            )
+        return True, "compressing: canary returned a compressed body"
+
     def _warn_invalid_key_once(self, status: int) -> None:
         """Print a one-time console warning when the hosted endpoint rejects our
         API key (HTTP 401/403). Requests keep working (passed through
