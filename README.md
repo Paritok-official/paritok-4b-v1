@@ -153,25 +153,23 @@ Plugging these formulas into a range of N (baseline ~96,500 tokens/turn):
 
 > **Honest cap:** the quadratic doesn't run forever — the LLM's context window (~200K) bounds it. In practice the curve flattens around turn ~12–20 as the window fills. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the window** — Paritok effectively buys back context length.
 
-> **Extrapolation:** the formulas predict **~63% saved at turn 12, ~74% at turn 15, and ~90%+ at turn 20** before the ~200K context window bounds further compounding — the higher end matches production deployments on long, complex projects.
-
 **One line:** *use more, save more* — compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions).
 
 ---
 
 ## 💰 Cost Impact
 
-The **74%** headline is the **file/content compression rate** — file reads, tool output, and history shrink to ~26% of their size. For the **actual end-to-end saving** per turn and per session, see [Savings compound over a session](#-savings-compound-over-a-session) above (~25% single turn, past ~39% by turn 5).
+The **74%** figure is Paritok's **content compression rate** — file reads, tool output, and history shrink to ~26% of their size. End-to-end token savings vary by session length and workload:
 
-**Dollar example** at Claude Sonnet input pricing (`$3 / M input tokens`), a sustained read-heavy workload at a conservative **~50% end-to-end**:
+**Dollar impact** at Claude Sonnet input pricing (`$3 / M input tokens`):
 
-| Scenario                                         | Uncompressed input | With Paritok |     Saved      |
-| ------------------------------------------------ | :----------------: | :----------: | :------------: |
-| Solo dev, 1-week prototype (5d × 300 turns)      |      $67.50        |    $33.75    |    **~$34**    |
-| Startup, 1-month project (20d × 400 turns)       |       $360         |     $180     |   **~$180**    |
-| 10-person team, 3-month project (60d × 10 × 500) |     $13,500        |    $6,750    |   **~$6.7K**   |
+| Scenario                                         | Uncompressed | Edit-heavy<br/>(~30%) | Mixed<br/>(~50%)     | Read-heavy<br/>(~75%)      |
+| ------------------------------------------------ | :----------: | :-------------------: | :------------------: | :------------------------: |
+| Solo dev, 1-week prototype (5d × 300 turns)      |   $67.50     | ~$47 (save $20)       | ~$34 (save $34)      | ~$17 (**save $51**)        |
+| Startup, 1-month project (20d × 400 turns)       |    $360      | ~$252 (save $108)     | ~$180 (save $180)    | ~$90 (**save $270**)       |
+| 10-person team, 3-month project (60d × 10 × 500) |   $13,500    | ~$9.5K (save $4K)     | ~$6.7K (save $6.7K)  | ~$3.4K (**save $10K**)     |
 
-<sub>Computed at a conservative ~50% **end-to-end** saving — not the 74% raw content-compression rate. Read-heavy multi-turn sessions land higher and approach the 74% ceiling; edit-heavy sessions land lower. Turn size assumed ~15K.</sub>
+<sub>Turn size assumed ~15K. Session-length reference: edit-heavy ~1-3 turns, mixed ~5-10 turns, read-heavy ~15+ turns. See the compounding table above for the turn-by-turn breakdown.</sub>
 
 Deployment overhead pays for itself in **days**, not weeks — and there's no lock-in: it's your own 4B model on your own hardware.
 
