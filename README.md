@@ -91,14 +91,16 @@ Turns beyond the recent window are summarized once the context fills up, so a lo
 
 Most "context savers" only touch one layer of the request. Paritok is the only one that compresses the **actual content** — non-destructively — while also handling tools and history.
 
-|                                | **Compresr** (Context-Gateway) | **LeanCTX**                                   | **Paritok**                              |
-| ------------------------------ | :----------------------------- | :-------------------------------------------- | :--------------------------------------- |
-| Approach                       | Proxy that summarizes history  | Local MCP tool that re-shapes reads           | Transparent compression gateway          |
-| Tool schemas                   | Filters / trims                | —                                             | Embedding filter                         |
-| Conversation history           | ✅ Summarize + compact         | ✅ Proxy compresses full history              | ✅ Summarize + compact                   |
-| **File / tool-output content** | ❌ Not compressed              | ⚠️ Reduced to a **skeleton**                  | ✅ **Semantic compression, intent kept** |
-| Mechanism                      | Model summarizer               | tree-sitter AST (rule-based)                  | Code-native 4B compression model         |
-| What the LLM receives          | Full file reads, untouched     | Signatures + line numbers, **bodies removed** | Intent-related context                   |
+|                                | **Compresr** (Context-Gateway) | **LeanCTX**                                   | **Paritok**                                          |
+| ------------------------------ | :----------------------------- | :-------------------------------------------- | :--------------------------------------------------- |
+| Approach                       | Proxy that summarizes history  | Local MCP tool that re-shapes reads           | Transparent compression gateway                      |
+| Tool schemas                   | Filters / trims                | —                                             | Embedding filter                                     |
+| Conversation history           | ✅ Summarize + compact         | ✅ Proxy compresses full history              | ✅ Summarize + compact                               |
+| **File / tool-output content** | ❌ Not compressed              | ⚠️ Reduced to a **skeleton**                  | ✅ **Semantic compression, intent kept**             |
+| Mechanism                      | Model summarizer               | tree-sitter AST (rule-based)                  | Code-native 4B compression model                     |
+| What the LLM receives          | Full file reads, untouched     | Signatures + line numbers, **bodies removed** | ~26% size, `[REF:id]` tags for recall                |
+| **Non-destructive recall**     | N/A                            | ⚠️ `ctx_expand` (extra round-trip)            | ✅ `read_original` (in-place, no extra turn)         |
+| **Open source**                | ⚠️ Gateway open, **model closed** | ✅ Open (rule-based, no model)                | ✅ **Gateway + 4B model, Apache 2.0** |
 
 **Compresr** compacts the *conversation* — background summarize + instant compaction at the threshold — but every file read, diff, and command output still hits the model at full size. The largest and fastest-growing part of a coding agent's bill goes untouched.
 
