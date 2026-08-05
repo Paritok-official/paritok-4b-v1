@@ -13,8 +13,6 @@ tests pin that:
   - rewrite_shell_command splices recovered literals back in, and abstains safely when a
     recovered literal carries quotes/backslashes or no file resolves.
 """
-import pytest
-
 from paritok.pipelines.codex_edit_recovery import (
     parse_shell_replaces,
     recover_shell_replace,
