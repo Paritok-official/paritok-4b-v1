@@ -142,7 +142,7 @@ So the 4.6% / 22.2% above is the **floor** (content only). Against a real no-Par
 - **Tool filter → linear.** Cumulative saving ≈ `21,000 × N` — a fixed block saved every turn.
 - **Crossover ≈ turn 6:** early on the tool filter dominates; past ~turn 6 content compression overtakes it and the gap widens.
 
-Plugging these formulas into a range of N (baseline ~96,500 tokens/turn), **capped at the ~200K context window**:
+Plugging these formulas into a range of N (baseline ~96,500 tokens/turn), **capped at a ~200K context budget** (typical Sonnet-tier configuration; larger-context models like Opus 1M push the flatten point out proportionally):
 
 | Turn (N) | Content saved | Tool filter saved | Cumulative saved | Cumulative baseline | **% saved** |
 |:---:|---:|---:|---:|---:|:---:|
@@ -153,7 +153,7 @@ Plugging these formulas into a range of N (baseline ~96,500 tokens/turn), **capp
 | 15 | 548,150 | 315,000 | 863,150   | 1,447,500 | **60%** |
 | 20 | 788,150 | 420,000 | 1,208,150 | 1,930,000 | **63%** |
 
-<sub>**Capped at the ~200K context window.** The quadratic only holds while history is still growing. Once the accumulated context fills the window (around turn ~8–12 here), client-side compaction holds it flat, per-turn content saving stops growing (freezes at ~48K/turn), and **% saved plateaus toward the ~72% default ceiling instead of diverging**. Turns 1–5 match the measured tables above; later rows are in-window projections.</sub>
+<sub>**Capped at a ~200K context budget.** The quadratic only holds while history is still growing. Once the accumulated context fills the configured budget (around turn ~8–12 here on Sonnet-tier ~200K), client-side compaction holds it flat, per-turn content saving stops growing (freezes at ~48K/turn), and **% saved plateaus toward the ~72% default ceiling instead of diverging**. Turns 1–5 match the measured tables above; later rows are in-window projections.</sub>
 
 **Ceilings shift with deployment shape:**
 
@@ -165,7 +165,7 @@ Plugging these formulas into a range of N (baseline ~96,500 tokens/turn), **capp
 
 <sub>The projection above uses the default ceiling. MCP-heavy setups earn a bigger per-turn tool-filter cut; context-saturated sessions get an even larger effective saving because they're now compared against a compacted, information-lossy baseline.</sub>
 
-> **Honest cap:** the quadratic doesn't run forever — the LLM's context window (~200K) bounds it. In practice the curve flattens around turn ~12–20 as the window fills. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the window** — Paritok effectively buys back context length.
+> **Honest cap:** the quadratic doesn't run forever — whatever session context budget you configure bounds it. In practice a ~200K budget (typical for Sonnet-tier deployments) makes the curve flatten around turn ~12–20 as the window fills; larger-context models like Opus 1M push the flatten point out proportionally. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the budget** — Paritok effectively buys back context length.
 
 **One line:** *use more, save more* — compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions).
 
