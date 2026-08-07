@@ -1,7 +1,7 @@
 <h1 align="center">Paritok</h1>
 
 <p align="center"><b>A non-destructive compression gateway for coding agents — cut your input-token bill without changing your agent.</b></p>
-<p align="center">Paritok sits between your agent and the LLM as a drop-in proxy. On every request it strips the tool-schema bloat, compresses tool results and file reads, and summarizes stale history — then forwards upstream, billed on the compressed tokens. Nothing is ever permanently discarded: the agent pulls back any exact original on demand. Works with <b>Claude Code, Cursor, Codex, OpenHands</b>, and any agent that honors <code>BASE_URL</code> — <b>you don't change a line of your agent</b>.<br/><br/>Powered by the <b>first open-source 4B compression model trained specifically for coding agents</b> (45K real trajectories). <b>~74% fewer tokens on typical workloads</b>, and savings <b>compound the longer a session runs</b>.</p>
+<p align="center">Paritok sits between your agent and the LLM as a drop-in proxy. On every request it strips the tool-schema bloat, compresses tool results and file reads, and summarizes stale history — then forwards upstream, billed on the compressed tokens. Nothing is ever permanently discarded: the agent pulls back any exact original on demand. Works with <b>Claude Code, Cursor, Codex, OpenHands</b>, and any agent that honors <code>BASE_URL</code> — <b>you don't change a line of your agent</b>.<br/><br/>Powered by the <b>first open-source 4B compression model trained specifically for coding agents</b> (45K real trajectories). Cut input token bills from <b>~25% on turn one</b> to <b>past 85% in long, context-saturated sessions</b>, and fit <b>~3× more turns</b> in the same context window.</p>
 
 <p align="center">
   <img src="./photo.png" alt="Paritok compression: 15,000 tokens shrunk to 3,850 tokens with semantics intact" width="820"/>
@@ -26,6 +26,7 @@
   <a href="#-the-three-levers">The three levers</a> ·
   <a href="#-savings-compound-over-a-session">Compounding savings</a> ·
   <a href="#-cost-impact">Cost</a> ·
+  <a href="#-pricing">Pricing</a> ·
   <a href="#-quick-start">Quick Start</a> ·
   <a href="#-the-engine-4b-compression-model">The engine (model)</a> ·
   <a href="#-team">Team</a>
@@ -141,7 +142,9 @@ Plugging these formulas into a range of N (baseline ~96,500 tokens/turn), **capp
 
 > **Honest cap:** the quadratic doesn't run forever — whatever session context budget you configure bounds it. In practice a ~200K budget (typical for Sonnet-tier deployments) makes the curve flatten around turn ~12–20 as the window fills; larger-context models like Opus 1M push the flatten point out proportionally. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the budget** — Paritok effectively buys back context length.
 
-**One line:** *use more, save more* — compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions).
+**Same budget, more room to think.** On a standard 200K Sonnet budget, a read-heavy session that would hit the wall at ~15 turns without Paritok runs to **~44 turns** with it. That's nearly 3× the runway on the same window, giving the agent more turns to think, remember, and finish the task before compaction kicks in.
+
+**One line:** *use more, save more*. Compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions).
 
 ---
 
@@ -160,6 +163,14 @@ The **74%** figure is Paritok's **content compression rate** — file reads, too
 <sub>Turn size assumed ~15K. Session-length reference: edit-heavy ~1-3 turns, mixed ~5-10 turns, read-heavy ~15+ turns. **Read-heavy (~75%) reflects typical MCP-heavy deployments (~78% ceiling); the default ~40-tool projection tops out at ~72%.** See the compounding table above for the turn-by-turn breakdown, and the deployment-scenarios table for how the ceiling shifts with tool count and session saturation.</sub>
 
 Deployment overhead pays for itself in **days**, not weeks — and there's no lock-in: it's your own 4B model on your own hardware.
+
+---
+
+## 💵 Pricing
+
+**Self-host (Apache 2.0): Free forever.** The gateway, the 4B model, and every training script ship open. Run on your own hardware. No telemetry, no key, no fees.
+
+**Hosted GPU ([paritok.com](https://paritok.com)): $0.30 per 1M tokens processed.** No GPU required. **Free through end of August** as we launch, with full pricing kicking in September 1st.
 
 ---
 
@@ -345,14 +356,11 @@ print(resp._paritok_savings.saved_tokens, resp._paritok_savings.ratio)
 ## 🧩 When to use it
 
 **Paritok is most useful when:**
-- Your agent (Claude Code / Cursor / Codex / OpenHands / custom SDK) sends **> 5,000 tokens per turn**.
-- You're paying per token to Anthropic / OpenAI / other providers.
-- Your session is **long and multi-turn** — that's where savings compound.
-- You want lower per-turn latency (fewer input tokens = faster prefill).
-
-**Paritok is less useful when:**
-- Your context is already short (< 2,000 tokens) or the workflow is single-turn Q&A (context doesn't accumulate).
-- You need **byte-exact context with no summarization step whatsoever** — though the `read_original` recall tool covers virtually every case where you'd otherwise worry about this.
+- Your sessions are **long and multi-turn**. Savings compound from ~25% at turn 1 to 60%+ by turn 20.
+- You're **read-heavy or mixed**: auditing, Q&A, debugging over a large codebase.
+- You have **many MCP tools** (40+). The tool filter alone drops ~21K tokens per turn.
+- You're paying premium input rates (Claude Sonnet $3/M, Opus $5/M, GPT-5 $10/M).
+- You want to **fit deeper sessions in the same context window** and avoid forced client-side compaction.
 
 ---
 
