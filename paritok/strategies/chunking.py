@@ -48,19 +48,74 @@ def _find_structural_boundaries(text: str) -> list[int]:
     return boundaries
 
 
+def _split_oversized_line(line: str, chunk_size: int) -> list[str]:
+    """Split a single line that alone exceeds `chunk_size`.
+
+    Line-granular splitting has nothing to work with when the input has no
+    newlines — minified JS, a one-line JSON tool result, a base64 payload — so
+    the line has to be cut internally or it goes upstream as one oversized SEG.
+
+    Cuts land on a separator near the target when one is available, so JSON and
+    minified code break between structural units rather than mid-token; a line
+    with no separators at all (base64) falls back to a flat slice.
+    """
+    total = count_tokens(line)
+    if total <= chunk_size:
+        return [line]
+
+    # Tokens are near-uniform in density within a single line, so a proportional
+    # slice lands close; the loop below verifies and re-splits anything still over.
+    parts = max(2, -(-total // chunk_size))
+    approx = max(1, len(line) // parts)
+
+    out: list[str] = []
+    start = 0
+    while start < len(line):
+        end = min(len(line), start + approx)
+        if end < len(line):
+            # look for a separator in the back half of the slice
+            window_start = start + approx // 2
+            cut = max(
+                line.rfind(sep, window_start, end) for sep in (",", " ", ";", "}", "]")
+            )
+            if cut > start:
+                end = cut + 1
+        out.append(line[start:end])
+        start = end
+
+    # Density can vary enough that a slice is still over budget; halve until it fits.
+    refined: list[str] = []
+    for piece in out:
+        while count_tokens(piece) > chunk_size and len(piece) > 1:
+            half = len(piece) // 2
+            refined.append(piece[:half])
+            piece = piece[half:]
+        refined.append(piece)
+    return refined
+
+
 def _token_split_block(lines: list[str], chunk_size: int) -> list[list[str]]:
     pieces: list[list[str]] = []
     cur: list[str] = []
     cur_tok = 0
     for ln in lines:
         t = count_tokens(ln)
-        if cur_tok + t > chunk_size and cur:
-            pieces.append(cur)
-            cur = [ln]
-            cur_tok = t
-        else:
-            cur.append(ln)
-            cur_tok += t
+        # A line larger than the whole budget can never be placed by the loop
+        # below: on the first iteration `cur` is empty, so the flush branch is
+        # skipped and the line is appended whole. Split it first, otherwise the
+        # boundary-less guard in split_into_chunks_structural is defeated by any
+        # input that happens to be one long line.
+        parts = _split_oversized_line(ln, chunk_size) if t > chunk_size else (ln,)
+        unsplit = len(parts) == 1
+        for part in parts:
+            pt = t if unsplit else count_tokens(part)
+            if cur_tok + pt > chunk_size and cur:
+                pieces.append(cur)
+                cur = [part]
+                cur_tok = pt
+            else:
+                cur.append(part)
+                cur_tok += pt
     if cur:
         pieces.append(cur)
     return pieces
