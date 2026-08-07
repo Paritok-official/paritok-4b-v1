@@ -184,8 +184,6 @@ Deployment overhead pays for itself in **days**, not weeks — and there's no lo
 
 ## 🚀 Quick Start
 
-Paritok runs as a **middle layer between your agent and the LLM API**. It intercepts each request, rewrites the context, and forwards it upstream — your agent doesn't change, it just points at Paritok.
-
 ### Fastest path (self-host, no clone needed)
 
 Everything ships in the PyPI package — you do **not** need to `git clone` the repo. In a fresh environment (with [Ollama](https://ollama.com/download) installed):
@@ -409,40 +407,6 @@ Real end-to-end evaluation. An agent scaffold receives its context through each 
 | **SWE-bench Lite — quality retained**          |  **86.5%** ⭐    | not evaluated|       85.6%         |
 | **Self-hostable open weights**                 |    Apache 2.0     |     MIT      |    closed API       |
 | **Per-token compressor fee**                   |  zero (self-host) |  zero (open) |  pay-per-token      |
-
-### Model Card
-
-| Property               | Value                                                                                    |
-| ---------------------- | ---------------------------------------------------------------------------------------- |
-| **Base model**         | [Qwen/Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507)        |
-| **Adapter type**       | LoRA, r=32, α=64, dropout=0.0                                                            |
-| **Target modules**     | `q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`                          |
-| **Training steps**     | 2000 (selected from a 5-checkpoint sweep, best on SWE-bench Lite subset)                 |
-| **Training precision** | bf16                                                                                     |
-| **Max seq length**     | 16,384                                                                                   |
-| **Dataset size**       | 45,000 samples across `file_read`, `bash_command`, `log_output`, etc.                    |
-| **Teacher**            | gpt-4.1-mini                                                                             |
-| **Weights**            | [🤗 HF Hub](https://huggingface.co/paritok/paritok-4b-v1)                                 |
-| **License**            | Apache 2.0 (weights); base model under its own Qwen license                              |
-
-Full training config: [`training/configs/sft_config_qwen3_4b.yaml`](training/configs/sft_config_qwen3_4b.yaml).
-
-### Training
-
-```bash
-# 1. Prepare data (regenerate pools from agent-trajectory dumps)
-python data_pipeline/extract/extract_file_read_pool.py --n 10000
-python data_pipeline/extract/extract_other_kinds_pool.py
-
-# 2. Distill via teacher (requires OPENAI_API_KEY, ~$300 in API cost)
-python data_pipeline/compress/compress_pool_file_read.py
-python data_pipeline/compress/compress_pool_other.py
-
-# 3. Train SFT (2× A100 80GB or 1× H100 80GB, ~5 hours)
-bash deploy_sft_4b.sh
-```
-
-Pipeline: data collection (100k+ raw turns) → segmentation into `[SEG]` blocks by kind → teacher distillation (gpt-4.1-mini) → filter & rebalance → LoRA SFT on Qwen3-4B → checkpoint selection on SWE-bench Lite.
 
 ---
 
