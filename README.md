@@ -1,7 +1,11 @@
 <h1 align="center">Paritok</h1>
 
-<p align="center"><b>The first open-source compression model trained specifically for coding agents.</b></p>
-<p align="center">Trained on <b>45K real coding-agent trajectories</b>, Paritok understands the difference between a function signature and a debug line — so it keeps what matters and drops what doesn't. Fully compatible with <b>Claude Code, Cursor, OpenHands</b>, and any agent framework using standard message format.<br/><br/><b>~74% fewer tokens on typical workloads</b> (up to <b>95%</b> on heavy long-session traffic), cutting your input token bill by <b>up to 95%</b> on Claude / GPT — while <b>matching gpt-4.1-mini</b> on SWE-bench Verified at a fraction of the cost — deployed as a <b>non-destructive gateway</b> where nothing is ever permanently discarded.</p>
+<p align="center"><b>A non-destructive compression gateway for coding agents — cut your input-token bill without changing your agent.</b></p>
+<p align="center">Paritok sits between your agent and the LLM as a drop-in proxy. On every request it strips the tool-schema bloat, compresses tool results and file reads, and summarizes stale history — then forwards upstream, billed on the compressed tokens. Nothing is ever permanently discarded: the agent pulls back any exact original on demand. Works with <b>Claude Code, Cursor, Codex, OpenHands</b>, and any agent that honors <code>BASE_URL</code> — <b>you don't change a line of your agent</b>.<br/><br/>Powered by the <b>first open-source 4B compression model trained specifically for coding agents</b> (45K real trajectories). Cut input token bills from <b>~25% on turn one</b> to <b>past 85% in long, context-saturated sessions</b>, and fit <b>~3× more turns</b> in the same context window.</p>
+
+<p align="center">
+  <img src="./photo.png" alt="Paritok compression: 15,000 tokens shrunk to 3,850 tokens with semantics intact" width="820"/>
+</p>
 
 <p align="center">
   <a href="https://huggingface.co/paritok/paritok-4b-v1">
@@ -10,170 +14,198 @@
   <a href="./LICENSE">
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="License"/>
   </a>
+  <a href="https://discord.gg/SeBJE5Eucp">
+    <img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"/>
+  </a>
   <img src="https://img.shields.io/badge/backbone-Qwen3--4B-purple" alt="Qwen3-4B"/>
   <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python"/>
 </p>
 
 <p align="center">
-  <a href="#-highlights">Highlights</a> ·
-  <a href="#-benchmark-swe-bench-verified">Benchmark</a> ·
+  <a href="#-what-paritok-does">What it does</a> ·
+  <a href="#-the-three-levers">The three levers</a> ·
+  <a href="#-savings-compound-over-a-session">Compounding savings</a> ·
   <a href="#-cost-impact">Cost</a> ·
-  <a href="#-how-paritok-compares">Compare</a> ·
+  <a href="#-pricing">Pricing</a> ·
   <a href="#-quick-start">Quick Start</a> ·
-  <a href="#-model-card">Model Card</a> ·
-  <a href="#-training">Training</a> ·
-  <a href="#-team">Team</a> ·
-  <a href="#-citation">Citation</a>
+  <a href="#-the-engine-4b-compression-model">The engine (model)</a> ·
+  <a href="#-team">Team</a>
 </p>
 
 ---
 
 ## 📢 News
 
-- **2026-07-14** &nbsp; **Paritok-4B-v1** released on Hugging Face Hub with full SWE-bench Verified end-to-end evaluation.
+- **2026-07-31** &nbsp; **v1.3.0** — stability release: edit-recovery, `read_original` API rename (from `expand_context`).
+- **2026-07-19** &nbsp; **v1.2.0** ships the embedding-based tool filter — the biggest single-turn lever (~29K → ~8K on a typical Claude Code turn), unlocking prompt-cache-friendly tool selection with `gateway_search_tools` recall.
+- **2026-07-15** &nbsp; **Paritok gateway v1.0.0** open-sourced — the proxy/middleware that turns the 4B model into a drop-in Claude Code / Cursor / Codex compression layer.
+- **2026-07-14** &nbsp; **Paritok-4B-v1** released on Hugging Face Hub with full SWE-bench Lite end-to-end evaluation.
 - **2026-06-25** &nbsp; Finished training. 45K teacher-distilled samples on the Qwen3-4B backbone.
 
 ---
 
-## ✨ Highlights
+## 🚪 What Paritok does
 
-- 🎨 **Code-native.** Trained end-to-end on real coding-agent trajectories (`file_read`, `bash_command`, `log_output`, ...). Paritok knows what an import statement is worth vs a debug line, so it protects function names, paths, and error strings while compressing.
-- 🚀 **Up to 95% fewer tokens** (74% on typical workloads) — compresses each segment to **25.7%** of original; drop-aware long sessions push overall cuts to 95%. **2× harder than gpt-4.1-mini** (50.2% CR) and **2.4× harder than gpt-5** (61.9% CR).
-- 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Verified — matching gpt-4.1-mini as compressor at **less than half the token spend**, and within 7pp of gpt-5 at **40% its context length**.
-- 💰 **Up to 95% off your input token bill** (74% on typical workloads) at Claude Sonnet pricing. Long-session teams save **thousands per month** — see [Cost Impact](#-cost-impact).
-- 🪶 **Small & self-hostable** — 4B LoRA adapter, bf16, runs on a single 24GB GPU. No SaaS, no lock-in, no per-token compressor fee.
-- 🔁 **Non-destructive by design.** Compressed content is never gone — the agent recalls any exact original on demand via `expand_context`. Lossy on the wire, fully recoverable when it counts. The 86.5% benchmark is the raw model *without* recall — a conservative floor, not the ceiling you actually run.
-- 🔓 **Fully open** — Apache 2.0 weights, reproducible data pipeline, real end-to-end SWE-bench numbers (no cherry-picking).
+Paritok runs as a **middle layer between your agent and the LLM API** — your agent points at Paritok instead of Anthropic/OpenAI, and everything else stays the same.
+
+```
+Your Agent (Claude Code / Cursor / Codex)
+  → builds request (tool schemas + history + tool results / file reads)
+     ★ Paritok gateway rewrites the request here ★
+  → forwarded to Anthropic / OpenAI  (billed on the compressed tokens)
+  ← response flows back unchanged; compressed refs expand on demand
+```
+
+The token bill for a coding agent is dominated by **input you re-send every turn**: dozens of tool schemas, an ever-growing message history, and big file-read / tool-output blocks. Paritok attacks all three — and because it's a **non-destructive** gateway, anything it compresses or filters is still recoverable on demand. It's lossy on the wire, fully recoverable when it counts.
 
 ---
 
-## 📊 Benchmark: SWE-bench Verified
+## 🎚️ The three levers
 
-Real end-to-end evaluation on **SWE-bench Verified**. An agent scaffold receives its context through each compressor, then attempts to resolve the issue. Primary metric is **quality retained** (solve rate normalized to the uncompressed baseline) — the fair way to compare compressors of different aggressiveness.
+Paritok saves tokens through three independent mechanisms. They stack, and they hit different parts of the bill:
 
-### Solve quality vs compression rate
+### 1. Tool-schema filter — the biggest single-turn win
 
-| Context source            | **Quality retained** ¹ | Compression rate |
-| ------------------------- | :--------------------: | :--------------: |
-| Uncompressed baseline     |         100.0%         |      100.0%      |
-| gpt-4.1-mini (compressor) |          85.6%         |       50.2%      |
-| gpt-5 (compressor)        |          93.6%         |       61.9%      |
-| **Paritok-4B-v1** ⭐      |       **86.5%**        |    **25.7%**     |
+Coding agents expose dozens of tools — often **70+** once you add MCP servers — in full JSON schema on **every** request. Most are irrelevant to the task at hand. Paritok filters them semantically (`tool_discovery.strategy: embedding`), keeping only the handful relevant to the user's intent in full schema and stubbing the rest.
 
-<sub>¹ Quality retained = compressor solve rate ÷ uncompressed baseline solve rate. Higher is better.</sub>
+- **This is the largest single-turn lever.** On a typical Claude Code turn the tool block alone is ~29K tokens; filtered it drops to ~8K — a saving no amount of file compression matches on a single turn.
+- **Prompt-cache friendly.** The selection is frozen per conversation, so the `tools[]` block stays byte-stable turn-to-turn and never invalidates the LLM's KV cache.
+- **Never destructive.** Anything filtered is recoverable — the model calls `gateway_search_tools` and gets the full schema back.
+- Runs a small open embedding model ([BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5), MIT, ~130MB) **entirely locally on CPU** — no API, no per-token fee.
+- An agent's **core execution tool** (shell / exec / apply_patch) is never stubbed, so agents like Codex that expose only a handful of tools always keep the one they can't work without.
 
-**What this says:**
-- Paritok retains **86.5% of uncompressed solve quality** — matching gpt-4.1-mini's retention — while shipping **less than half the tokens**.
-- Paritok comes within **7pp of gpt-5's retention** at **~40% of gpt-5's context length**.
-- No open compressor comes close on the CR / quality frontier.
+### 2. Content compression — file reads, tool output, history
 
-**Paritok cuts context by 74% while retaining 86.5% of uncompressed solve quality** — enough headroom to double or triple your monthly turn budget on the same API spend.
+Each `tool_result`, file read, and (once the window fills) stale history turn is compressed by the 4B model down to **~26% of its original size**, tagged `[REF:id]`. This is where the trained model earns its keep: it knows a function signature from a debug line, so it protects identifiers, paths, and error strings while dropping the noise.
 
-<sub>Benchmark numbers above use Paritok's baseline 25.7% CR (74% context cut) — the raw compressor performance in a controlled setting. Real production savings can go higher with drop-aware deployment; see [Cost Impact](#-cost-impact) for the 95% upper bound.</sub>
+- Single-turn this is the *smaller* lever (a few % — most of a turn's cost is the fixed prefix). **Its power shows up across a session — see below.**
+- Every compressed segment is recoverable: the agent calls `read_original` / `expand_context` to pull back the exact untouched bytes, locally and instantly.
 
-> **The benchmark is a floor, not a ceiling.** The 86.5% above measures the **raw 4B model** — its compressed output fed straight to the agent, with **no recall enabled**. What you actually deploy adds a **non-destructive gateway**: every compressed segment is tagged `[REF:id]`, and the agent can call `expand_context` to pull back the exact original at any time — locally, instantly, verbatim. Nothing is permanently discarded, so in real-world use the deployed gateway recovers quality the raw benchmark leaves on the table. Across real user workloads so far, with recall enabled, we've seen no reports of lost quality. We publish the raw-model number because it's the honest, reproducible floor — not the ceiling you run in production.
+### 3. History summarization — keep long sessions under the window
 
-Evaluation used the standard [SWE-bench Verified](https://www.swebench.com/) harness with a public agent scaffold. Per-issue results and reproduction instructions will be published with the v2 release.
+Turns beyond the recent window are summarized once the context fills up, so a long session stays inside the model's context window instead of overflowing (or forcing an aggressive client-side compaction that drops detail).
+
+---
+
+## 📈 Savings compound over a session
+
+This is the part a single-turn benchmark hides. In a real multi-turn session the two levers **grow at different rates**, and together they compound.
+
+We ran the same read-only "find the bug" task for **5 consecutive turns in one Claude Code session** (Sonnet, GPU model). **Important:** in this A/B the tool filter was left **on for both sides**, so the delta below isolates **content compression alone** — it does *not* include the tool-schema saving.
+
+**Content compression only** (tool filter on both sides):
+
+| Turns | Paritok (files compressed) | Baseline (files raw)  | Content-only saving |
+| :---: | :------------------------: | :-------------------: | :-----------------: |
+| 1     | 72,041                     | 75,507                | 4.6%                |
+| 5     | 293,389 (cumulative)       | 377,099 (cumulative)  | 22.2%               |
+
+But that's only one of the three levers. The real "do I use Paritok or not?" comparison must add the tool filter back — and **without Paritok the agent sends the entire ~29K tool-schema block every turn, not the filtered ~8K.** Folding that ~21K/turn back onto the no-Paritok side:
+
+**Full stack** (filter + compression vs. no Paritok at all):
+
+| Turns | Paritok (filter + compression) | No Paritok (full tools + raw files) | End-to-end saving |
+| :---: | :----------------------------: | :---------------------------------: | :---------------: |
+| 1     | 72,041                         | ~96,500                             | **~25%**          |
+| 5     | 293,389 (cumulative)           | ~482,000 (cumulative)               | **~39%**          |
+
+So the 4.6% / 22.2% above is the **floor** (content only). Against a real no-Paritok baseline it's **~25% on turn 1, past ~39% by turn 5** — because the tool filter saves a fixed ~21K *every* turn on top of the compounding content compression.
+
+**Why it grows:** every file you read stays in history and is re-sent (cache-read) every subsequent turn — so content compression keeps paying off turn after turn, while the tool filter adds a fixed cut on top.
+
+- **Content compression → quadratic.** Cumulative saving ≈ `3,350 × N²` — each turn's compressed reads keep paying off on every later turn.
+- **Tool filter → linear.** Cumulative saving ≈ `21,000 × N` — a fixed block saved every turn.
+- **Crossover ≈ turn 6:** early on the tool filter dominates; past ~turn 6 content compression overtakes it and the gap widens.
+
+Plugging these formulas into a range of N (baseline ~96,500 tokens/turn), **capped at a ~200K context budget** (typical Sonnet-tier configuration; larger-context models like Opus 1M push the flatten point out proportionally):
+
+| Turn (N) | Content saved | Tool filter saved | Cumulative saved | Cumulative baseline | **% saved** |
+|:---:|---:|---:|---:|---:|:---:|
+| 1  | 3,350   | 21,000  | 24,350    | 96,500    | **25%** |
+| 5  | 83,750  | 105,000 | 188,750   | 482,500   | **39%** |
+| 10 | 308,150 | 210,000 | 518,150   | 965,000   | **54%** |
+| 12 | 404,150 | 252,000 | 656,150   | 1,158,000 | **57%** |
+| 15 | 548,150 | 315,000 | 863,150   | 1,447,500 | **60%** |
+| 20 | 788,150 | 420,000 | 1,208,150 | 1,930,000 | **63%** |
+
+<sub>**Capped at a ~200K context budget.** The quadratic only holds while history is still growing. Once the accumulated context fills the configured budget (around turn ~8–12 here on Sonnet-tier ~200K), client-side compaction holds it flat, per-turn content saving stops growing (freezes at ~48K/turn), and **% saved plateaus toward the ~72% default ceiling instead of diverging**. Turns 1–5 match the measured tables above; later rows are in-window projections.</sub>
+
+**Ceilings shift with deployment shape:**
+
+| Deployment scenario                              | Baseline / turn | Ceiling % saved |
+| ------------------------------------------------ | :-------------: | :-------------: |
+| Default (~40 tools, moderate reads)              | 96,500          | **~72%**        |
+| MCP-heavy (70+ tools)                            | 127,500         | **~78%**        |
+| Context-saturated (no-Paritok forced to compact) | ~200,000        | **~85%+**       |
+
+<sub>The projection above uses the default ceiling. MCP-heavy setups earn a bigger per-turn tool-filter cut; context-saturated sessions get an even larger effective saving because they're now compared against a compacted, information-lossy baseline.</sub>
+
+> **Honest cap:** the quadratic doesn't run forever — whatever session context budget you configure bounds it. In practice a ~200K budget (typical for Sonnet-tier deployments) makes the curve flatten around turn ~12–20 as the window fills; larger-context models like Opus 1M push the flatten point out proportionally. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the budget** — Paritok effectively buys back context length.
+
+**Same budget, more room to think.** Because each turn's prefix is smaller, the agent fits far more turns in the same window before compaction kicks in.
+
+| Context budget                        | Turns without Paritok | Turns with Paritok |
+| :------------------------------------ | :-------------------: | :----------------: |
+| 128K (typical Claude Code default)    | ~10                   | ~30                |
+| 200K (Claude Sonnet standard)         | ~15                   | ~44                |
+| 1M (Claude Opus, GPT-5 beta)          | ~75                   | ~220               |
+
+That's roughly **3× the runway on any budget**, giving the agent more turns to think and finish the task before hitting the wall.
+
+**One line:** *use more, save more*. Compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions).
 
 ---
 
 ## 💰 Cost Impact
 
-**Cut your input token bill by up to 95%.** Paritok compresses input; output is unchanged and left to your provider.
+The **74%** figure is Paritok's **content compression rate** — file reads, tool output, and history shrink to ~26% of their size. End-to-end token savings vary by session length and workload:
 
-> **How to read the numbers below:** all tables use Paritok's **typical 74% saving** (median compression rate 25.7%). Long agent sessions with heavy tool-output and file-read repetition push savings up to **95%** — real bills often land higher than shown here.
+**Dollar impact** at Claude Sonnet input pricing (`$3 / M input tokens`):
 
-At Claude Sonnet input pricing (`$3 / M input tokens`), **typical scenario (74% saving)**:
+| Scenario                                         | Uncompressed | Edit-heavy<br/>(~30%) | Mixed<br/>(~50%)     | Read-heavy<br/>(~75%)      |
+| ------------------------------------------------ | :----------: | :-------------------: | :------------------: | :------------------------: |
+| Solo dev, 1-week prototype (5d × 300 turns)      |   $67.50     | ~$47 (save $20)       | ~$34 (save $34)      | ~$17 (**save $51**)        |
+| Startup, 1-month project (20d × 400 turns)       |    $360      | ~$252 (save $108)     | ~$180 (save $180)    | ~$90 (**save $270**)       |
+| 10-person team, 3-month project (60d × 10 × 500) |   $13,500    | ~$9.5K (save $4K)     | ~$6.7K (save $6.7K)  | ~$3.4K (**save $10K**)     |
 
-| Turn input size    | Uncompressed input cost | With Paritok |
-| ------------------ | :---------------------: | :----------: |
-| Short (8K)         |         $0.024          |    $0.006    |
-| Typical (15K)      |         $0.045          |    $0.012    |
-| Long session (30K) |         $0.090          |    $0.023    |
-
-### Real project scenarios (typical 15K/turn workload, 74% saving)
-
-| Scenario                                         | Uncompressed input | With Paritok |     Saved      |
-| ------------------------------------------------ | :----------------: | :----------: | :------------: |
-| Solo dev, 1-week prototype (5d × 300 turns)      |      $67.50        |    $17.34    |    **$50**     |
-| Startup, 1-month project (20d × 400 turns)       |       $360         |      $92     |   **$268**    |
-| 10-person team, 3-month project (60d × 10 × 500) |     $13,500        |    $3,468    |   **~$10K**    |
+<sub>Turn size assumed ~15K. Session-length reference: edit-heavy ~1-3 turns, mixed ~5-10 turns, read-heavy ~15+ turns. **Read-heavy (~75%) reflects typical MCP-heavy deployments (~78% ceiling); the default ~40-tool projection tops out at ~72%.** See the compounding table above for the turn-by-turn breakdown, and the deployment-scenarios table for how the ceiling shifts with tool count and session saturation.</sub>
 
 Deployment overhead pays for itself in **days**, not weeks — and there's no lock-in: it's your own 4B model on your own hardware.
 
 ---
 
-## 🆚 How Paritok compares
+## 💵 Pricing
 
-|                                                | **Paritok-4B-v1** | LLMLingua-2  | gpt-4.1-mini prompt |
-| ---------------------------------------------- | :---------------: | :----------: | :-----------------: |
-| **Trained on real coding-agent trajectories**  |     ✅            |     ❌       |         ❌          |
-| **Preserves function names / imports / paths** | ✅ (by design)    |   partial    |     partial         |
-| **Compression rate** (lower = harder)          |  **25.7%** ⭐    |    ~40%      |       50.2%         |
-| **SWE-bench Verified — quality retained**      |  **86.5%** ⭐    | not evaluated|       85.6%         |
-| **Self-hostable open weights**                 |    Apache 2.0     |     MIT      |    closed API       |
-| **Per-token compressor fee**                   |  zero (self-host) |  zero (open) |  pay-per-token      |
+**Self-host (Apache 2.0): Free forever.** The gateway, the 4B model, and every training script ship open. Run on your own hardware. No telemetry, no key, no fees.
 
-Paritok is the only entry trained end-to-end on real coding-agent trajectories — that's why it compresses **~2× harder than gpt-4.1-mini prompting** on the same task while keeping the same solve rate.
-
----
-
-## 🔧 Cache-friendly tool selection (embedding)
-
-Coding agents (Claude Code, Cursor, …) expose dozens of tools — often 70+ once you add MCP servers — on **every** request. That tool-schema JSON is a large slice of input tokens that's mostly irrelevant to the task at hand. Paritok can filter it semantically: set `tool_discovery.strategy: embedding` and it keeps only the handful of tools relevant to the user's intent in full schema, stubbing the rest.
-
-Crucially it's **prompt-cache friendly** — the selection is frozen per conversation, so the `tools[]` block stays stable turn-to-turn and doesn't invalidate the LLM's KV cache. Anything filtered out is still recoverable on demand (the model calls `gateway_search_tools`).
-
-It runs a small open embedding model, [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) (MIT-licensed, ~130MB), **entirely locally on CPU — no API, no per-token fee**.
-
-This is the **default** tool-discovery strategy (`paritok init` writes it for you):
-
-```yaml
-tool_discovery:
-  strategy: embedding
-```
-```bash
-pip install "paritok[toolselect]"   # adds sentence-transformers (CPU-only)
-```
-
-> **First request warms up the model (~10–15s, depending on network speed — it downloads bge-small from Hugging Face once, then caches locally).** Every request after that is instant (~15 ms).
+**Hosted GPU ([paritok.com](https://paritok.com)): $0.30 per 1M tokens processed.** No GPU required. **Free through end of August** as we launch, with full pricing kicking in September 1st.
 
 ---
 
 ## 🚀 Quick Start
-
-Paritok runs as a **middle layer between your agent and the LLM API**. It intercepts each request, compresses the context, and forwards it upstream — your agent doesn't change, it just points at Paritok.
-
-```
-Your Agent (Claude Code / Cursor / Codex)
-  → builds request (tool results + history + tool schemas)
-     ★ Paritok middleware compresses here ★
-  → forwarded to Anthropic / OpenAI  (billed on the compressed tokens)
-  ← response flows back unchanged; compressed refs expand on demand
-```
 
 ### Fastest path (self-host, no clone needed)
 
 Everything ships in the PyPI package — you do **not** need to `git clone` the repo. In a fresh environment (with [Ollama](https://ollama.com/download) installed):
 
 ```bash
-pip install "paritok[proxy]"     # the middleware + CLI
+pip install "paritok[proxy]"     # the gateway + CLI
 paritok up                       # pulls the model if missing, then starts the proxy
 ```
 
-`paritok up` is the pip-only, no-clone equivalent of a setup script: it checks Ollama, `ollama pull`s `paritok/paritok-4b-v1` and tags it as the local `paritok-4b-v1` if it isn't already there (~2.5GB, first run only), then serves on port 8080.
+`paritok up` checks Ollama, `ollama pull`s `paritok/paritok-4b-v1` and tags it as the local `paritok-4b-v1` if it isn't already there (~2.5GB, first run only), then serves on port 8080.
 
-> **Leave that terminal running.** The proxy is a foreground server — every agent request flows through it, so it must stay up for the whole session. Closing the terminal (or Ctrl-C) stops compression. Open a **separate** terminal for the next step.
+> **Leave that terminal running.** The proxy is a foreground server — every agent request flows through it, so it must stay up for the whole session. Open a **separate** terminal for the next step.
 
-In the shell that launches your agent ([step 4](#4-point-your-agent-at-it)):
+In the shell that launches your agent:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8080   # then start Claude Code / Cursor / …
 ```
 
-No config file is needed — `paritok up` and `paritok proxy` run on built-in defaults. Run `paritok init` to drop a starter `paritok.yaml` only if you want to tweak settings. (Cloned the repo? `./deploy.sh` does the same pull + start.)
+No config file is needed — `paritok up` and `paritok proxy` run on built-in defaults. Run `paritok init` to drop a starter `paritok.yaml` only if you want to tweak settings.
 
-**q4 vs full precision.** `paritok up` uses the q4 model (`:latest`, ~2.5GB) by default. For full precision, run `paritok up --registry-model paritok/paritok-4b-v1:f16` (~8GB). If you already `ollama pull`ed either variant yourself, `up` **auto-detects** which one you have and uses it — no re-download. Prefer to run each step by hand? They're below.
+**q4 vs full precision.** `paritok up` uses the q4 model (`:latest`, ~2.5GB) by default. For full precision, run `paritok up --registry-model paritok/paritok-4b-v1:f16` (~8GB). If you already `ollama pull`ed either variant, `up` **auto-detects** which one you have — no re-download.
 
 ### 1. Install
 
@@ -182,6 +214,14 @@ pip install "paritok[proxy]"
 # or, from a clone of this repo:
 pip install -e ".[proxy]"
 ```
+
+Enable the tool-schema filter (recommended — it's the biggest single-turn lever):
+
+```bash
+pip install "paritok[toolselect]"   # adds sentence-transformers (CPU-only)
+```
+
+> **First request warms up the embedding model (~10–15s — downloads bge-small once, then caches locally).** Every request after is instant (~15 ms).
 
 ### 2. Pick a backend — self-host **or** the GPU server
 
@@ -194,13 +234,11 @@ use_gpu_server: false   # ← the only switch that matters
 **Option A — self-host** (`false`, default). Run the open 4B model on your own machine. No key, nothing leaves your box. Simplest is **Ollama**:
 
 ```bash
-ollama pull paritok/paritok-4b-v1               # one-time, ~2.5GB
+ollama pull paritok/paritok-4b-v1                # one-time, ~2.5GB
 ollama cp   paritok/paritok-4b-v1 paritok-4b-v1  # tag it as the runtime name
 ```
 
-The registry (pull) name is namespaced; the second line tags it as the bare `paritok-4b-v1` the config uses. Default [`paritok.yaml`](paritok.yaml) already points `local_model` at Ollama (`http://localhost:11434/v1`, `model: paritok-4b-v1`) — nothing else to set. (`./deploy.sh` does both steps for you.)
-
-> Want full precision? Pull `paritok/paritok-4b-v1:f16` instead (~8GB, needs more RAM/VRAM). The default `:latest` is q4_K_M (~2.5GB) — the quantization the runtime is validated against.
+Default [`paritok.yaml`](paritok.yaml) already points `local_model` at Ollama — nothing else to set.
 
 <details>
 <summary><b>Alternative: vLLM</b> (serves the HF LoRA adapter directly, no GGUF)</summary>
@@ -216,10 +254,8 @@ vllm serve Qwen/Qwen3-4B-Instruct-2507 \
   --port 8000
 ```
 
-Then in `paritok.yaml`, set `local_model.base_url: http://localhost:8000/v1` (keep `model: paritok-4b-v1`, the `--lora-modules` name).
+Then in `paritok.yaml`, set `local_model.base_url: http://localhost:8000/v1`.
 </details>
-
-> Whatever you name the served model, make `local_model.model` match it (or override once with `PARITOK_MODEL=<name>`).
 
 **Option B — Paritok GPU server** (`true`). No GPU required. Create an API key at **[paritok.com](https://paritok.com) → dashboard → API keys**, then:
 
@@ -235,7 +271,7 @@ gpu_server:
 paritok proxy --port 8080 --config-file paritok.yaml
 ```
 
-**Keep this terminal open** — the proxy must stay running for the whole session; run your agent from a separate terminal. On startup it checks the backend and warns (never aborts) if it can't reach one — e.g. the Ollama model isn't pulled, or the hosted server isn't reachable.
+**Keep this terminal open** — the proxy must stay running for the whole session; run your agent from a separate terminal. On startup it checks the backend and warns (never aborts) if it can't reach one.
 
 ### 4. Point your agent at it
 
@@ -253,34 +289,24 @@ $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8080"
 $env:OPENAI_BASE_URL    = "http://127.0.0.1:8080"
 ```
 
-Keep your real provider API key set as usual (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) — the proxy only rewrites the request body and forwards your headers upstream. That's it: Claude Code, Cursor, and any agent that honors `BASE_URL` now routes through Paritok. Compressed prompts go upstream; original responses come back unchanged.
+Keep your real provider API key set as usual (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) — the proxy only rewrites the request body and forwards your headers upstream. Compressed prompts go upstream; original responses come back unchanged.
 
-> **Codex is the exception — it does *not* read `OPENAI_BASE_URL`.** The Codex CLI takes its endpoint from `~/.codex/config.toml`, not an env var, so the line above silently has no effect for it. See [Codex setup](#codex-cli) just below.
+> **Codex is the exception — it does *not* read `OPENAI_BASE_URL`.** The Codex CLI takes its endpoint from `~/.codex/config.toml`. See [Codex setup](#codex-cli).
 
-#### Any OpenAI-compatible upstream (Groq, Gemini, …)
+#### Any OpenAI-compatible upstream (Groq, Gemini, OpenRouter, …)
 
-The compressor is independent of the upstream LLM — it runs locally on the Paritok
-4B model (or the GPU server), so you can point the OpenAI path at **any**
-OpenAI-Chat-Completions-compatible endpoint with `--openai-url`. Your agent sends its
-provider key as usual; the proxy forwards it.
+The gateway is independent of the upstream LLM — point the OpenAI path at **any** OpenAI-Chat-Completions-compatible endpoint with `--openai-url`:
 
 ```bash
-# Groq — base host; the proxy appends /v1/chat/completions
-paritok proxy --openai-url https://api.groq.com/openai
-#   -> https://api.groq.com/openai/v1/chat/completions
-
-# Gemini — its OpenAI-compat path isn't {base}/v1/..., so pass the FULL endpoint
-paritok proxy --openai-url https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+paritok proxy --openai-url https://api.groq.com/openai        # Groq
+paritok proxy --openai-url https://openrouter.ai/api/v1       # OpenRouter
 ```
 
-`--openai-url` accepts either a base host (standard `/v1/chat/completions` is appended)
-or a full endpoint already ending in `/chat/completions` (used verbatim). Then point your
-OpenAI-SDK agent at the proxy (`OPENAI_BASE_URL=http://127.0.0.1:8080`), set
-`OPENAI_API_KEY` to the provider's key, and use that provider's model names.
+Then point your OpenAI-SDK agent at the proxy (`OPENAI_BASE_URL=http://127.0.0.1:8080`), set `OPENAI_API_KEY` to the provider's key, and use that provider's model names.
 
 #### Codex CLI
 
-Codex ignores `OPENAI_BASE_URL` — it only reads its endpoint from `~/.codex/config.toml`. So Paritok writes that file for you. Flip one switch in `paritok.yaml` and paste your key:
+Codex ignores `OPENAI_BASE_URL` — it only reads its endpoint from `~/.codex/config.toml`, so Paritok writes that file for you:
 
 ```yaml
 codex:
@@ -289,47 +315,14 @@ codex:
   api_key: "sk-..."        # your OpenAI key (or leave "" to use env OPENAI_API_KEY)
 ```
 
-Then start the proxy and run Codex — that's it:
-
 ```bash
 paritok up     # writes ~/.codex/config.toml (backs up any existing one)
 codex          # in another shell — now routed through Paritok
 ```
 
-Everything lives in `paritok.yaml`; the generated `config.toml` is a derived file (a `.paritok-bak` backup is kept if you already had one). Codex custom providers only speak the **`responses`** wire protocol, which the proxy serves at `/v1/responses`.
-
-<details>
-<summary>Prefer to write <code>~/.codex/config.toml</code> by hand?</summary>
-
-```toml
-model = "gpt-5"
-model_provider = "paritok"
-
-[model_providers.paritok]
-name = "paritok"
-base_url = "http://127.0.0.1:8080/v1"
-wire_api = "responses"
-env_key = "OPENAI_API_KEY"      # your OpenAI key, read from the environment
-```
-</details>
-
-#### Using an API key instead of a subscription
-
-Signed in with a subscription (Claude Pro/Max, or ChatGPT via `codex login`)? Just launch `claude` / `codex` the way you normally do.
-
-Prefer a pay-as-you-go **API key**?
-
-- **Claude Code** — set your key and keep the base URL from step 4:
-  ```bash
-  export ANTHROPIC_API_KEY=sk-ant-...
-  export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
-  claude
-  ```
-- **Codex** — put your key in the `codex:` block of `paritok.yaml` (above); nothing else to set.
+Codex custom providers only speak the **`responses`** wire protocol, which the proxy serves at `/v1/responses`.
 
 ### 5. Check it's working
-
-The proxy exposes two endpoints:
 
 ```bash
 curl http://127.0.0.1:8080/health   # {"status":"ok","version":"..."}
@@ -349,18 +342,9 @@ curl http://127.0.0.1:8080/stats    # live compression totals
 }
 ```
 
-These numbers are **scoped to what Paritok actually intervenes in** — the content it compresses (tool results / file reads / old history) plus the tool schemas it stubs. Everything it can't affect (your system prompt, the model's output) is deliberately excluded. `compression_ratio` and `tokens_saved` are raw token counts on that domain (lower ratio is better).
-
-`estimated_cost_saved_usd` is **cache-aware**, not a flat list-price multiply, priced at each model's own input rate (the proxy sees the `model` on every request; unknown → $3/M):
-
-- **Compressed content** (file reads / tool output / history) is new input each turn, so its saving is priced at the full base rate.
-- **Tool schemas** are frozen per conversation (the selection is stable byte-for-byte across turns), so that block is a prompt-cache hit: its first turn is a cache **write** (`1.25×` base) and every turn after is a cache **read** (Claude `0.1×`, GPT-5 `0.1×`, gpt-4o `0.5×`, …). Counting it at full list price would massively overstate savings, since the uncompressed schemas would have been cached too.
-
-Edit the base rates and cache multipliers in [`paritok/proxy/pricing.py`](paritok/proxy/pricing.py). The hosted dashboard at [paritok.com](https://paritok.com) reports the same content + tool basis for `use_gpu_server: true` traffic.
+These numbers are **scoped to what Paritok actually intervenes in** — the content it compresses plus the tool schemas it stubs. Everything it can't affect (your system prompt, the model's output) is excluded. `estimated_cost_saved_usd` is **cache-aware**: compressed content is priced at the full base rate (new input each turn), while the frozen tool block is priced as a prompt-cache hit after turn one — counting it at full list price would massively overstate savings.
 
 ### SDK mode (alternative)
-
-Prefer to wrap your client directly in Python?
 
 ```python
 import anthropic
@@ -373,116 +357,66 @@ resp = client.messages.create(
 print(resp._paritok_savings.saved_tokens, resp._paritok_savings.ratio)
 ```
 
-### Just the raw model?
-
-To load the LoRA adapter and compress a single `[SEG]` block yourself (no middleware), see [`examples/inference/basic.py`](examples/inference/basic.py).
-
 ---
 
-## 🧩 Use Cases
+## 🧩 When to use it
 
 **Paritok is most useful when:**
-- Your AI coding agent (Claude Code / Cursor / Copilot / OpenHands / custom SDK) sends **> 5 000 tokens per turn**.
-- You're paying per token to Anthropic / OpenAI / other API providers.
-- You want lower per-turn latency (fewer input tokens = faster prefill).
-- You can tolerate **~300 ms** of compression overhead per request.
-
-**Paritok is less useful when:**
-- Your context is already short (< 2 000 tokens).
-- You need **byte-exact context with no summarization step whatsoever** — though the `expand_context` recall tool covers virtually every case where you'd otherwise worry about this.
-- Your workflow is single-turn Q&A (context doesn't accumulate).
-
-### How the middleware works
-
-The [`paritok/`](paritok/) package is the middle layer. On every request the engine ([`paritok/middleware/wrapper.py`](paritok/middleware/wrapper.py)) runs four steps before forwarding upstream:
-
-1. **Tool discovery** — 70+ tool schemas → top-K kept in full, the rest stubbed ([`pipelines/tool_discovery.py`](paritok/pipelines/tool_discovery.py)).
-2. **Compress tool outputs** — each `tool_result` is compressed by the 4B model ([`pipelines/compress.py`](paritok/pipelines/compress.py)).
-3. **Compress old history** — turns beyond the recent window are summarized once the context fills up.
-4. **Inject virtual tools** — `expand_context` and `gateway_search_tools` ([`pipelines/virtual.py`](paritok/pipelines/virtual.py)) let the model pull back anything it needs.
-
-**Never destructive.** Compressed content is tagged `[REF:id]`; if the LLM needs the original it calls the `expand_context` virtual tool and the middleware returns the full text locally. `gateway_search_tools` recovers any tool schema that discovery stubbed out.
-
-Deploy it either way — the same package powers both:
-
-```
-Your Agent  ──►  Paritok middleware  ──►  Anthropic / OpenAI
-   (raw)          (self-host or GPU server)   (billed on compressed)
-```
-
-Configure everything in [`paritok.yaml`](paritok.yaml); flip `use_gpu_server` to move between your own hardware and our hosted GPU endpoint without touching your agent.
+- Your sessions are **long and multi-turn**. Savings compound from ~25% at turn 1 to 60%+ by turn 20.
+- You're **read-heavy or mixed**: auditing, Q&A, debugging over a large codebase.
+- You have **many MCP tools** (40+). The tool filter alone drops ~21K tokens per turn.
+- You're paying premium input rates (Claude Sonnet $3/M, Opus $5/M, GPT-5 $10/M).
+- You want to **fit deeper sessions in the same context window** and avoid forced client-side compaction.
 
 ---
 
-## 📋 Model Card
+## 🧠 The engine: 4B compression model
 
-| Property               | Value                                                                                    |
-| ---------------------- | ---------------------------------------------------------------------------------------- |
-| **Base model**         | [Qwen/Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507)        |
-| **Adapter type**       | LoRA, r=32, α=64, dropout=0.0                                                            |
-| **Target modules**     | `q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`                          |
-| **Training steps**     | 2000 (selected from a 5-checkpoint sweep, best on SWE-bench Verified subset)             |
-| **Training precision** | bf16                                                                                     |
-| **Effective batch**    | 32 (per_device=2 × grad_accum=16)                                                        |
-| **Learning rate**      | 1e-5, linear decay, 10% warmup                                                           |
-| **Optimizer**          | AdamW (8-bit)                                                                            |
-| **Max seq length**     | 16 384                                                                                   |
-| **Dataset size**       | 45 000 samples across `file_read`, `bash_command`, `log_output`, etc.                    |
-| **Teacher**            | gpt-4.1-mini                                                                             |
-| **Weights**            | [🤗 HF Hub](https://huggingface.co/paritok/paritok-4b-v1)                      |
-| **License**            | Apache 2.0 (weights); base model under its own Qwen license                              |
+The gateway's content compression is powered by **Paritok-4B-v1**, the first open-source compression model trained end-to-end on real coding-agent trajectories. This section is the engine spec — you don't need it to run the gateway, but it's why the compression keeps what matters.
 
-Full training config: [`training/configs/sft_config_qwen3_4b.yaml`](training/configs/sft_config_qwen3_4b.yaml).
+### Highlights
 
----
+- 🎨 **Code-native.** Trained on real coding-agent trajectories (`file_read`, `bash_command`, `log_output`, …). It knows what an import statement is worth vs a debug line, so it protects function names, paths, and error strings while compressing.
+- 🚀 **Compresses each segment to 25.7%** of original — **2× harder than gpt-4.1-mini** (50.2% CR) and **2.4× harder than gpt-5** (61.9% CR).
+- 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Lite — matching gpt-4.1-mini as compressor at **less than half the token spend**.
+- 🪶 **Small & self-hostable** — 4B LoRA adapter, bf16, runs on a single 24GB GPU. No SaaS, no lock-in, no per-token compressor fee.
+- 🔓 **Fully open** — Apache 2.0 weights, reproducible data pipeline, real end-to-end SWE-bench numbers.
 
-## 🎓 Training
+### Benchmark: SWE-bench Lite
 
-### Reproduce from scratch
+Real end-to-end evaluation. An agent scaffold receives its context through each compressor, then attempts to resolve the issue. Primary metric is **quality retained** (solve rate normalized to the uncompressed baseline).
 
-High-level pipeline; see [`training/`](training/) and [`data_pipeline/`](data_pipeline/) for the actual scripts.
+| Context source            | **Quality retained** ¹ | Compression rate |
+| ------------------------- | :--------------------: | :--------------: |
+| Uncompressed baseline     |         100.0%         |      100.0%      |
+| gpt-4.1-mini (compressor) |          85.6%         |       50.2%      |
+| gpt-5 (compressor)        |          93.6%         |       61.9%      |
+| **Paritok-4B-v1** ⭐      |       **86.5%**        |    **25.7%**     |
 
-```bash
-# 1. Prepare data (regenerate pools from agent-trajectory dumps)
-python data_pipeline/extract/extract_file_read_pool.py --n 10000
-python data_pipeline/extract/extract_other_kinds_pool.py
+<sub>¹ Quality retained = compressor solve rate ÷ uncompressed baseline solve rate. Higher is better.</sub>
 
-# 2. Distill via teacher (requires OPENAI_API_KEY, ~$300 in API cost)
-python data_pipeline/compress/compress_pool_file_read.py
-python data_pipeline/compress/compress_pool_other.py
+> **The benchmark is a floor, not a ceiling.** The 86.5% measures the **raw 4B model** with **no recall enabled** — compressed output fed straight to the agent. What you actually deploy is the gateway: every segment is tagged `[REF:id]` and the agent can call `read_original` to pull back the exact bytes at any time. Nothing is permanently discarded, so real-world deployment recovers quality the raw benchmark leaves on the table. We publish the raw-model number because it's the honest, reproducible floor.
 
-# 3. Train SFT (2× A100 80GB or 1× H100 80GB, ~5 hours)
-bash deploy_sft_4b.sh
-```
+### How Paritok compares
 
-Or on a fresh RunPod / Lambda / Modal pod:
-
-```bash
-RUNPOD_HOST=<host> RUNPOD_PORT=<port> ./deploy_sft_4b.sh
-```
-
-### Pipeline summary
-
-1. **Data collection** — 100k+ raw agent-trajectory turns from open-source SWE-bench-style trajectory dumps.
-2. **Segmentation** — split each turn into `[SEG]` blocks by kind (`file_read`, `bash_command`, `log_output`, ...).
-3. **Teacher distillation** — gpt-4.1-mini produces the target compression for each segment.
-4. **Filter & rebalance** — drop mal-formatted teacher outputs, up-sample rare kinds.
-5. **SFT** — LoRA on Qwen3-4B-Instruct-2507, imitation loss on the teacher's compressed reply.
-6. **Checkpoint selection** — evaluate on SWE-bench Verified end-to-end, pick step 2000.
+|                                                | **Paritok-4B-v1** | LLMLingua-2  | gpt-4.1-mini prompt |
+| ---------------------------------------------- | :---------------: | :----------: | :-----------------: |
+| **Trained on real coding-agent trajectories**  |     ✅            |     ❌       |         ❌          |
+| **Preserves function names / imports / paths** | ✅ (by design)    |   partial    |     partial         |
+| **Compression rate** (lower = harder)          |  **25.7%** ⭐    |    ~40%      |       50.2%         |
+| **SWE-bench Lite — quality retained**          |  **86.5%** ⭐    | not evaluated|       85.6%         |
+| **Self-hostable open weights**                 |    Apache 2.0     |     MIT      |    closed API       |
+| **Per-token compressor fee**                   |  zero (self-host) |  zero (open) |  pay-per-token      |
 
 ---
 
 ## 🗺️ Roadmap
 
-Paritok-4B-v1 is our first release. What's next:
-
-- 🎯 **Paritok-4B-v2.** Next-generation training pipeline pushing compression to **under 20%** while closing the gap to uncompressed solve rate. Target: **up to +15pp identifier retention** at even tighter compression.
-- 📈 **Frontier-scale backbones.** Larger models (10B+ parameters) for multi-day Claude Code / Cursor sessions with **100K+ token histories** and heavy multi-file workflows.
-- 🌍 **Multi-language expansion.** First-class support for TypeScript, Rust, Go, Java, C++, Kotlin — v1 is Python-heavy but the architecture is language-agnostic.
-- 🔌 **Native integrations.** Drop-in `mcp add paritok` plugin for Claude Code and Cursor. (Or route to the hosted GPU endpoint with `use_gpu_server: true`.)
-- ⚙️ **Adaptive compression.** Per-segment auto-selection of compression aggressiveness based on age, kind, and downstream intent — no manual tuning, no level knobs.
-
-Follow the [🤗 model discussions](https://huggingface.co/paritok/paritok-4b-v1/discussions) or star the repo for release notifications.
+- 🎯 **Paritok-4B-v2.** Next-gen pipeline pushing compression **under 20%** while closing the gap to uncompressed solve rate.
+- 📈 **Frontier-scale backbones.** Larger models (10B+) for multi-day sessions with **100K+ token histories**.
+- 🌍 **Multi-language expansion.** First-class TypeScript, Rust, Go, Java, C++, Kotlin — v1 is Python-heavy but the architecture is language-agnostic.
+- 🔌 **Native integrations.** Drop-in `mcp add paritok` plugin for Claude Code and Cursor.
+- ⚙️ **Adaptive compression.** Per-segment auto-selection of aggressiveness based on age, kind, and downstream intent — no manual tuning.
 
 ---
 
@@ -493,15 +427,11 @@ Paritok is built by two engineers — no big lab, no external funding, just mont
 - **Jiayu Shi** — training, modeling, reward design, data pipeline.
 - **Luzhuo Chen** — evaluation, deployment, product, data pipeline.
 
-We ship on our own budget and share every result transparently. Paritok-4B-v1 is our first release; v2 is in training.
-
 Reach us: [paritok9@gmail.com](mailto:paritok9@gmail.com) · X [@Paritok](https://x.com/Paritok)
 
 ---
 
 ## 📖 Citation
-
-If you find this work useful, please cite:
 
 ```bibtex
 @misc{paritok-4b-v1,
@@ -513,30 +443,17 @@ If you find this work useful, please cite:
 }
 ```
 
-Please also cite the base model:
-
-```bibtex
-@misc{qwen3-4b-instruct,
-  author       = {Qwen Team},
-  title        = {Qwen3-4B-Instruct},
-  year         = {2025},
-  publisher    = {Hugging Face},
-  howpublished = {\url{https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507}},
-}
-```
-
 ---
 
 ## 📄 License
 
-Apache 2.0 — see [LICENSE](./LICENSE).
-
-The base model, Qwen3-4B-Instruct-2507, is released under its own license. Please review it before commercial deployment.
+Apache 2.0 — see [LICENSE](./LICENSE). The base model, Qwen3-4B-Instruct-2507, is released under its own license.
 
 ---
 
 ## 💬 Community & Support
 
+- 👥 **Join the community** → [Discord](https://discord.gg/SeBJE5Eucp)
 - 🐛 **Bug reports & feature requests** → [GitHub Issues](https://github.com/Paritok-official/paritok-4b-v1/issues)
 - 💭 **Discussion** → [🤗 HF Model discussions](https://huggingface.co/paritok/paritok-4b-v1/discussions)
 - 📧 **Contact** → [paritok9@gmail.com](mailto:paritok9@gmail.com)
