@@ -24,7 +24,6 @@
 <p align="center">
   <a href="#-what-paritok-does">What it does</a> ·
   <a href="#-the-three-levers">The three levers</a> ·
-  <a href="#-how-we-compare">How we compare</a> ·
   <a href="#-savings-compound-over-a-session">Compounding savings</a> ·
   <a href="#-cost-impact">Cost</a> ·
   <a href="#-quick-start">Quick Start</a> ·
@@ -84,31 +83,6 @@ Each `tool_result`, file read, and (once the window fills) stale history turn is
 ### 3. History summarization — keep long sessions under the window
 
 Turns beyond the recent window are summarized once the context fills up, so a long session stays inside the model's context window instead of overflowing (or forcing an aggressive client-side compaction that drops detail).
-
----
-
-## 🆚 How we compare
-
-Most "context savers" only touch one layer of the request. Paritok is the only one that compresses the **actual content** — non-destructively — while also handling tools and history.
-
-|                                | **Compresr** (Context-Gateway) | **LeanCTX**                                   | **Paritok**                                          |
-| ------------------------------ | :----------------------------- | :-------------------------------------------- | :--------------------------------------------------- |
-| Approach                       | Proxy that summarizes history  | Local MCP tool that re-shapes reads           | Transparent compression gateway                      |
-| Tool schemas                   | Filters / trims                | —                                             | Embedding filter                                     |
-| Conversation history           | ✅ Summarize + compact         | ✅ Proxy compresses full history              | ✅ Summarize + compact                               |
-| **File / tool-output content** | ❌ Not compressed              | ⚠️ Reduced to a **skeleton**                  | ✅ **Semantic compression, intent kept**             |
-| Mechanism                      | Model summarizer               | tree-sitter AST (rule-based)                  | Code-native 4B compression model                     |
-| What the LLM receives          | Full file reads, untouched     | Signatures + line numbers, **bodies removed** | ~26% size, `[REF:id]` tags for recall                |
-| **Non-destructive recall**     | N/A                            | ⚠️ `ctx_expand` (extra round-trip)            | ✅ `read_original` (in-place, no extra turn)         |
-| **Open source**                | ⚠️ Gateway open, **model closed** | ✅ Open (rule-based, no model)                | ✅ **Gateway + 4B model, Apache 2.0** |
-
-**Compresr** compacts the *conversation* — background summarize + instant compaction at the threshold — but every file read, diff, and command output still hits the model at full size. The largest and fastest-growing part of a coding agent's bill goes untouched.
-
-**LeanCTX** compresses code by throwing away everything except the structure. A file comes back as `fn process_data() { ... } // line 42-67` — signatures and line ranges, no bodies, **no intent**. The moment the agent actually needs to reason about that function, it has to fire a second `ctx_expand` / `lines:N-M` round-trip to pull the body back in. Those re-expansions add tokens *and* extra turns, so on any task that reads more than it skims, the real savings collapse toward the un-compressed baseline.
-
-**Paritok** does everything the other two do — and the one thing they don't. Like Compresr, it summarizes and compacts conversation history. On top of that it adds an embedding-based tool-schema filter (the single biggest chunk of per-turn overhead) and, crucially, it compresses the **content itself**, not just its outline. File reads, tool output, and history shrink to ~26% of their size while the **meaning and intent stay intact**, so the agent keeps working without a round-trip. When it does need the exact bytes, `read_original` returns them verbatim — nothing is lost, and nothing has to be re-fetched to make progress.
-
-**In short:** Compresr trims the conversation, LeanCTX hands the model an outline it has to keep re-expanding, and Paritok shrinks the actual content — tools, reads, and history — without losing intent or forcing a single extra turn.
 
 ---
 
