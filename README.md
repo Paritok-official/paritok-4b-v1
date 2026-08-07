@@ -142,7 +142,15 @@ Plugging these formulas into a range of N (baseline ~96,500 tokens/turn), **capp
 
 > **Honest cap:** the quadratic doesn't run forever — whatever session context budget you configure bounds it. In practice a ~200K budget (typical for Sonnet-tier deployments) makes the curve flatten around turn ~12–20 as the window fills; larger-context models like Opus 1M push the flatten point out proportionally. But that ceiling is itself a feature: **because each turn's prefix is smaller, the agent fits more turns before hitting the budget** — Paritok effectively buys back context length.
 
-**Same budget, more room to think.** On a standard 200K Sonnet budget, a read-heavy session that would hit the wall at ~15 turns without Paritok runs to **~44 turns** with it. That's nearly 3× the runway on the same window, giving the agent more turns to think, remember, and finish the task before compaction kicks in.
+**Same budget, more room to think.** Because each turn's prefix is smaller, the agent fits far more turns in the same window before compaction kicks in.
+
+| Context budget                        | Turns without Paritok | Turns with Paritok |
+| :------------------------------------ | :-------------------: | :----------------: |
+| 128K (typical Claude Code default)    | ~10                   | ~30                |
+| 200K (Claude Sonnet standard)         | ~15                   | ~44                |
+| 1M (Claude Opus, GPT-5 beta)          | ~75                   | ~220               |
+
+That's roughly **3× the runway on any budget**, giving the agent more turns to think and finish the task before hitting the wall.
 
 **One line:** *use more, save more*. Compression frees up the window and lets the agent go deeper and longer in the same session. Strongest on **long, multi-turn, read-heavy** work (auditing, Q&A over a big codebase, long debugging sessions).
 
