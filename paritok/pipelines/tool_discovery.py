@@ -14,6 +14,12 @@ from dataclasses import dataclass
 
 from paritok.config import ParitokConfig
 
+# Below this many tools, tool discovery is skipped entirely: the overhead of the
+# virtual gateway_search_tools schema + per-tool stubs exceeds any filtering savings
+# on a small tool set (and would be net-negative). Agents like gptme expose only a
+# handful of tools.
+_MIN_TOOLS_FOR_DISCOVERY = 5
+
 # An agent's core execution tools — its only means to actually DO anything (run a
 # command, edit a file). These must NEVER be stubbed by tool discovery: agents like
 # codex expose only ~9 tools and shell/exec is the one they can't work without.
@@ -153,6 +159,18 @@ class ToolDiscoveryPipeline:
         """
         cfg = self.config.tool_discovery
         limit = cfg.k_max if cfg.strategy == "embedding" else cfg.top_k
+
+        # Small tool sets: the discovery overhead (a virtual gateway_search_tools schema
+        # plus per-tool stubs) costs more tokens than filtering a handful of tools can
+        # save — and can go net-negative. Below this floor, pass everything through.
+        if len(tools) < _MIN_TOOLS_FOR_DISCOVERY:
+            return DiscoveryResult(
+                tools=list(tools),
+                full_tools=list(tools),
+                stubbed_tools=[],
+                original_count=len(tools),
+                kept_count=len(tools),
+            )
 
         if cfg.strategy == "passthrough" or len(tools) <= limit:
             return DiscoveryResult(
