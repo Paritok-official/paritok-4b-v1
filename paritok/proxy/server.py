@@ -1028,7 +1028,13 @@ def create_app(
                 else:
                     if ref:
                         served_refs.add(ref)
-                        fresh += 1
+                    # Count ANY freshly-answered virtual call as progress, not only
+                    # ref-expansions — a gateway_search_tools call carries a query, not a
+                    # shadow ref, so gating on `ref` here dropped its results and returned
+                    # before the model ever saw the recovered tools. Bounded by
+                    # _MAX_RESOLVE_ROUNDS; an already-served ref hits the branch above and
+                    # still does not count as fresh.
+                    fresh += 1
                     if is_expand_call(call.get("name", "")):
                         args = {**args, "shadow_id": ref}
                     out = _virtual_call_output(
@@ -1268,7 +1274,13 @@ def create_app(
                 else:
                     if ref:
                         served_refs.add(ref)
-                        fresh += 1
+                    # Count ANY freshly-answered virtual call as progress, not only
+                    # ref-expansions — a gateway_search_tools call carries a query, not a
+                    # shadow ref, so gating on `ref` here dropped its results and returned
+                    # before the model ever saw the recovered tools. Bounded by
+                    # _MAX_RESOLVE_ROUNDS; an already-served ref hits the branch above and
+                    # still does not count as fresh.
+                    fresh += 1
                     if is_expand_call(fn.get("name", "")):
                         args = {**args, "shadow_id": ref}
                     out = _virtual_call_output(
@@ -1396,7 +1408,13 @@ def create_app(
                 else:
                     if ref:
                         served_refs.add(ref)
-                        fresh += 1
+                    # Count ANY freshly-answered virtual call as progress, not only
+                    # ref-expansions — a gateway_search_tools call carries a query, not a
+                    # shadow ref, so gating on `ref` here dropped its results and returned
+                    # before the model ever saw the recovered tools. Bounded by
+                    # _MAX_RESOLVE_ROUNDS; an already-served ref hits the branch above and
+                    # still does not count as fresh.
+                    fresh += 1
                     if is_expand_call(call.get("name", "")):
                         args = {**args, "shadow_id": ref}
                     out = _virtual_call_output(
