@@ -186,6 +186,44 @@ def _openai_chat_url(base: str) -> str:
     return f"{base}/v1/chat/completions"
 
 
+def _extract_tool_text(content):
+    """Pull the compressible text out of an OpenAI ``role:tool`` message ``content``.
+
+    ``content`` may be a plain string OR a list of content parts
+    (``[{"type":"text","text":...}, ...]``) — Claude Code's OpenAI mode and gptme use
+    the list form. Returns ``(text, rewrap)`` where ``rewrap(compressed)`` rebuilds
+    ``content`` in its original shape (non-text parts preserved). Returns
+    ``(None, None)`` when there is no text to compress.
+    """
+    if isinstance(content, str):
+        return content, (lambda c: c)
+    if isinstance(content, list):
+        texts = [p.get("text", "") for p in content
+                 if isinstance(p, dict) and p.get("type") == "text"
+                 and isinstance(p.get("text"), str)]
+        if not texts:
+            return None, None
+        joined = "\n".join(texts)
+
+        def _rewrap(compressed, _parts=content):
+            # Fold the (single) compressed text into the first text part; keep any
+            # non-text parts (images, etc.) exactly where they were.
+            out, inserted = [], False
+            for p in _parts:
+                if isinstance(p, dict) and p.get("type") == "text":
+                    if not inserted:
+                        out.append({**p, "text": compressed})
+                        inserted = True
+                else:
+                    out.append(p)
+            if not inserted:
+                out.append({"type": "text", "text": compressed})
+            return out
+
+        return joined, _rewrap
+    return None, None
+
+
 def _to_responses_tool(t: dict) -> dict:
     """Render one tool in the flat Responses shape.
 
@@ -524,19 +562,25 @@ def create_app(
 
         _, processed_tools, stats, stubbed = engine.process_request(parsed.messages, raw_tools)
 
-        # Compress tool messages (OpenAI uses role="tool" instead of tool_result blocks)
+        # Compress tool messages (OpenAI uses role="tool" instead of tool_result blocks).
+        # `content` may be a plain string OR a list of content parts — extract the text
+        # either way, compress it, and put it back in the original shape (see
+        # _extract_tool_text). gptme/Claude-Code-OpenAI use the list form; string-only
+        # handling here silently skipped their file reads.
         query = oai_adapter.extract_query(parsed.messages)
         for i, msg in enumerate(parsed.messages):
-            if msg.get("role") == "tool":
-                content = msg.get("content", "")
-                if isinstance(content, str) and content.strip():
-                    cr = engine.pipeline.compress(content, query=query,
-                                                  upstream_model=body.get("model", ""))
-                    if not cr.metadata.get("skipped"):
-                        parsed.messages[i] = {**msg, "content": cr.compressed}
-                        stats.original_tokens += cr.original_tokens
-                        stats.compressed_tokens += cr.compressed_tokens
-                        stats.items_compressed += 1
+            if msg.get("role") != "tool":
+                continue
+            text, rewrap = _extract_tool_text(msg.get("content", ""))
+            if not (text and text.strip()):
+                continue
+            cr = engine.pipeline.compress(text, query=query,
+                                          upstream_model=body.get("model", ""))
+            if not cr.metadata.get("skipped"):
+                parsed.messages[i] = {**msg, "content": rewrap(cr.compressed)}
+                stats.original_tokens += cr.original_tokens
+                stats.compressed_tokens += cr.compressed_tokens
+                stats.items_compressed += 1
 
         # Inject virtual tools now — process_request runs its injection BEFORE we
         # compress the OpenAI `role:tool` messages above, so at that point

@@ -1,5 +1,5 @@
 """Tests for OpenAI-compatible upstream routing and error-body robustness."""
-from paritok.proxy.server import _openai_chat_url
+from paritok.proxy.server import _openai_chat_url, _extract_tool_text
 from paritok.proxy.adapters.openai import find_virtual_tool_calls
 
 
@@ -45,3 +45,36 @@ def test_find_virtual_tool_calls_finds_virtual_calls():
     ]}}]}
     names = [tc["function"]["name"] for tc in find_virtual_tool_calls(body)]
     assert names == ["expand_context"]  # only the virtual tool, not the real one
+
+
+def test_extract_tool_text_string_content():
+    # Plain-string tool content: returned verbatim, rewrap is identity.
+    text, rewrap = _extract_tool_text("   1\tprint('hi')\n")
+    assert text == "   1\tprint('hi')\n"
+    assert rewrap("COMPRESSED") == "COMPRESSED"
+
+
+def test_extract_tool_text_list_content_single_text_block():
+    # gptme / Claude-Code-OpenAI send content as a list of parts; the file read used
+    # to be silently skipped. Extract the text and rewrap back into the list shape.
+    content = [{"type": "text", "text": "```f.py\n  1\tx = 1\n  2\ty = 2\n```"}]
+    text, rewrap = _extract_tool_text(content)
+    assert "x = 1" in text and "y = 2" in text
+    assert rewrap("[REF:abc]") == [{"type": "text", "text": "[REF:abc]"}]
+
+
+def test_extract_tool_text_list_preserves_non_text_parts():
+    content = [
+        {"type": "text", "text": "big file body"},
+        {"type": "image_url", "image_url": {"url": "data:x"}},
+    ]
+    text, rewrap = _extract_tool_text(content)
+    assert text == "big file body"
+    out = rewrap("SMALL")
+    assert out[0] == {"type": "text", "text": "SMALL"}
+    assert out[1] == {"type": "image_url", "image_url": {"url": "data:x"}}  # untouched
+
+
+def test_extract_tool_text_no_text_returns_none():
+    assert _extract_tool_text([{"type": "image_url", "image_url": {"url": "u"}}]) == (None, None)
+    assert _extract_tool_text(123) == (None, None)
