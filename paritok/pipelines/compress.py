@@ -15,6 +15,7 @@ Pipeline steps:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -26,6 +27,8 @@ from paritok.storage import ShadowStorage, build_shadow_storage, content_hash
 from paritok.strategies.local_model import LocalModelStrategy
 from paritok.strategies.tagger import classify_kind_from_content
 from paritok.token_counter import _DEFAULT_ENCODING, count_tokens
+
+logger = logging.getLogger(__name__)
 
 _REF_PATTERN = re.compile(r"^\[REF:[a-f0-9]+(?:\s+src=[^\]]*)?\]")
 
@@ -247,14 +250,25 @@ class CompressionPipeline:
         # actually sees), matching the local fallback.
         if kind is None:
             kind = classify_kind_from_content(model_text)
-        compressed = self._model.compress(
-            model_text,
-            query=query,
-            level=level,
-            kind=kind,
-            target_ratio=target_ratio,
-            upstream_model=upstream_model,
-        )
+        try:
+            compressed = self._model.compress(
+                model_text,
+                query=query,
+                level=level,
+                kind=kind,
+                target_ratio=target_ratio,
+                upstream_model=upstream_model,
+            )
+        except Exception as e:
+            # Compression is an optimization, not a hard dependency. If the backend
+            # fails (timeout / model still loading, connection error, bad response),
+            # forward the ORIGINAL content uncompressed instead of 500-ing the whole
+            # request — otherwise the agent gets stuck in a retry loop (issue #36).
+            logger.warning(
+                "compression backend failed (%s: %s); forwarding original uncompressed",
+                type(e).__name__, e,
+            )
+            return self._skip(content, original_tokens, f"backend_error:{type(e).__name__}")
 
         # 6. Effectiveness check
         compressed_tokens = count_tokens(compressed, enc)
