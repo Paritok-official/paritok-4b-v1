@@ -180,7 +180,7 @@ The **74%** figure is Paritok's **content compression rate** — file reads, too
 
 <sub>Default ~40-tool config on Claude Sonnet. **MCP-heavy setups (70+ tools) push savings to ~78%; context-saturated sessions past 85%.** Use the [interactive calculator at paritok.com](https://paritok.com) for your specific team size, LLM, and workload — it plugs in Claude Opus ($5/M), GPT-5 ($10/M), Haiku ($1/M), Gemini, or any provider you use.</sub>
 
-Deployment overhead pays for itself in **days**, not weeks — and there's no lock-in: it's your own 4B model on your own hardware.
+Install and running in minutes on your own hardware. No vendor lock-in.
 
 ---
 
