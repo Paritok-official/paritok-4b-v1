@@ -4,7 +4,7 @@
 <p align="center">Paritok sits between your agent and the LLM as a drop-in proxy. On every request it strips the tool-schema bloat, compresses tool results and file reads, and summarizes stale history — then forwards upstream, billed on the compressed tokens. Nothing is ever permanently discarded: the agent pulls back any exact original on demand. Works with <b>Claude Code, Cursor, Codex, OpenHands</b>, and any agent that honors <code>BASE_URL</code> — <b>you don't change a line of your agent</b>.<br/><br/>Powered by the <b>first open-source 4B compression model trained specifically for coding agents</b> (45K real trajectories). Cut input token bills from <b>~25% on turn one</b> to <b>past 85% in long, context-saturated sessions</b>, and fit <b>~3× more turns</b> in the same context window.</p>
 
 <p align="center">
-  <img src="./photo.png" alt="Paritok compression: 3,000 tokens shrunk to 780 with semantics intact" width="820"/>
+  <img src="./paritok-compression.png" alt="Paritok compression: 3,000 tokens shrunk to 780 with semantics intact" width="820"/>
 </p>
 
 <p align="center">
@@ -162,16 +162,23 @@ The **74%** figure is Paritok's **content compression rate** — file reads, too
 
 **Per-session cost** at Claude Sonnet input pricing (`$3 / M input tokens`):
 
-| Turns  | Context (uncompressed → compressed) | Savings | Cost with Paritok |
-| :---: | :--------------------------------: | :-----: | :---------------: |
-| 1     | 40K → 12K                          | 25%     | $0.073            |
-| 5     | 84K → 30K                          | 39%     | $0.197            |
-| 10    | 140K → 52K                         | 54%     | $0.413            |
-| 20    | 250K → 95K                         | 63%     | $0.816            |
+| Turns | Context (uncompressed → compressed) | Savings | Bill (no Paritok → with Paritok) |
+| :---: | :--------------------------------: | :-----: | :------------------------------: |
+| 1     | 40K → 12K                          | 25%     | $0.12 → $0.09                    |
+| 5     | 84K → 30K                          | 39%     | $0.25 → $0.15                    |
+| 10    | 140K → 52K                         | 54%     | $0.42 → $0.19                    |
+| 20    | 250K → 95K                         | 63%     | $0.75 → $0.28                    |
+
+**Annual savings by team size** (120 turns/dev/day, ~54% average end-to-end):
+
+| Team size              | Baseline annual bill | Saved with Paritok |
+| :--------------------- | :------------------: | :----------------: |
+| Solo dev               |        $2.4K         |       ~$1.3K       |
+| Small team (5 devs)    |        $12.2K        |       ~$6.6K       |
+| Growing team (20 devs) |        $48.8K        |       ~$26K        |
+| Enterprise (100 devs)  |         $244K        |       ~$132K       |
 
 <sub>Default ~40-tool config on Claude Sonnet. **MCP-heavy setups (70+ tools) push savings to ~78%; context-saturated sessions past 85%.** Use the [interactive calculator at paritok.com](https://paritok.com) for your specific team size, LLM, and workload — it plugs in Claude Opus ($5/M), GPT-5 ($10/M), Haiku ($1/M), Gemini, or any provider you use.</sub>
-
-For scale reference: a 5-person team running 120 turns/day averages **~$6,550/year saved** (54% off the $12,198 baseline Anthropic bill) on default settings.
 
 Deployment overhead pays for itself in **days**, not weeks — and there's no lock-in: it's your own 4B model on your own hardware.
 
