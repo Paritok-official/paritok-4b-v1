@@ -7,11 +7,11 @@ paritok.yaml when `codex.enabled` is true — so the whole setup lives in one fi
 
 Codex custom providers support only the `responses` wire protocol (which the
 proxy serves at `/v1/responses`). Two auth modes:
-  - API key: embedded as `experimental_bearer_token` (or left to `env_key`
-    OPENAI_API_KEY when blank).
-  - ChatGPT subscription (`codex.subscription: true`): the provider carries no
-    key and sets `requires_openai_auth = true`, so Codex sends its own logged-in
-    OAuth token to the proxy, which forwards it to the ChatGPT backend.
+  - ChatGPT subscription (default): the provider carries no key and sets
+    `requires_openai_auth = true`, so Codex sends its own logged-in OAuth token
+    to the proxy, which forwards it to the ChatGPT backend.
+  - API key (`codex.subscription: false`): embedded as
+    `experimental_bearer_token` (or left to `env_key` OPENAI_API_KEY when blank).
 """
 
 from __future__ import annotations

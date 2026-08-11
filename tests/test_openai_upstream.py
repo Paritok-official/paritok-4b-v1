@@ -31,6 +31,15 @@ def test_responses_upstream_missing_or_malformed_auth_defaults_to_openai():
         "https://api.openai.com/v1/responses"
 
 
+def test_codex_config_defaults_to_subscription():
+    # No subscription/api_key given → subscription is the default (requires_openai_auth),
+    # even if an api_key is present but subscription isn't explicitly disabled.
+    assert "requires_openai_auth = true" in render_codex_config(CodexConfig(model="gpt-5"), "127.0.0.1", 8080)
+    with_key = render_codex_config(CodexConfig(model="gpt-5", api_key="sk-proj-XXX"), "127.0.0.1", 8080)
+    assert "requires_openai_auth = true" in with_key
+    assert "experimental_bearer_token" not in with_key
+
+
 def test_codex_config_subscription_uses_oauth_not_key():
     body = render_codex_config(CodexConfig(model="gpt-5", subscription=True), "127.0.0.1", 8080)
     assert "requires_openai_auth = true" in body
@@ -38,9 +47,17 @@ def test_codex_config_subscription_uses_oauth_not_key():
     assert "env_key" not in body
 
 
-def test_codex_config_api_key_mode_embeds_bearer():
-    body = render_codex_config(CodexConfig(model="gpt-5", api_key="sk-proj-XXX"), "127.0.0.1", 8080)
+def test_codex_config_api_key_mode_needs_subscription_false():
+    # API key path only when subscription is explicitly disabled.
+    body = render_codex_config(
+        CodexConfig(model="gpt-5", subscription=False, api_key="sk-proj-XXX"), "127.0.0.1", 8080)
     assert 'experimental_bearer_token = "sk-proj-XXX"' in body
+    assert "requires_openai_auth" not in body
+
+
+def test_codex_config_subscription_false_no_key_uses_env():
+    body = render_codex_config(CodexConfig(model="gpt-5", subscription=False), "127.0.0.1", 8080)
+    assert 'env_key = "OPENAI_API_KEY"' in body
     assert "requires_openai_auth" not in body
 
 
