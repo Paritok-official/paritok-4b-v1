@@ -58,10 +58,10 @@ trace:
 # write ~/.codex/config.toml for you (backing up any existing one). Then just run
 # `codex`. Everything lives here — no TOML to hand-edit.
 codex:
-  enabled: false           # true → auto-configure Codex to route through this proxy
-  model: ""                # optional — empty lets Codex choose (its -m flag / /model / panel). Pin one if you want.
-  subscription: true       # default: use your ChatGPT login (run `codex login`). false → use api_key below
-  api_key: ""              # OpenAI key, only used when subscription: false (empty → Codex reads env OPENAI_API_KEY)
+  enabled: false           # true → route Codex through this proxy (writes ~/.codex/config.toml).
+                           # Codex uses your OWN login (ChatGPT subscription or API key via
+                           # `codex login`), like Claude Code — no key needed here. Add
+                           # `model: <id>` only if you want to pin one (else Codex chooses).
 
 shadow_storage: memory     # "memory" | "redis" (redis persists [REF] across restarts; needs paritok[redis])
 """
