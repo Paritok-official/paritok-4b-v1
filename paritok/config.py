@@ -112,11 +112,14 @@ class CodexConfig:
         `experimental_bearer_token` (empty → Codex reads `env_key`
         OPENAI_API_KEY from the environment).
     Codex custom providers only support the `responses` wire protocol, so that
-    is fixed.
+    is fixed. `model` is optional: leave it empty and Codex picks the model
+    itself (its `-m/--model` flag, the interactive `/model`, the panel picker, or
+    its own default) — important for ChatGPT accounts, where a pinned `gpt-5`
+    is rejected.
     """
 
     enabled: bool = False
-    model: str = "gpt-5"
+    model: str = ""  # empty → let Codex choose; set to pin a specific model
     subscription: bool = True  # default: use the logged-in ChatGPT OAuth (requires_openai_auth). false → api_key path
     api_key: str = ""  # OpenAI key (only used when subscription is false); empty → Codex reads env OPENAI_API_KEY
     config_path: str = ""  # override the generated config.toml location (empty → ~/.codex/config.toml)

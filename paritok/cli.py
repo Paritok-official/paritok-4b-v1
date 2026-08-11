@@ -59,7 +59,7 @@ trace:
 # `codex`. Everything lives here — no TOML to hand-edit.
 codex:
   enabled: false           # true → auto-configure Codex to route through this proxy
-  model: gpt-5             # any model your key can call
+  model: ""                # optional — empty lets Codex choose (its -m flag / /model / panel). Pin one if you want.
   subscription: true       # default: use your ChatGPT login (run `codex login`). false → use api_key below
   api_key: ""              # OpenAI key, only used when subscription: false (empty → Codex reads env OPENAI_API_KEY)
 
@@ -86,7 +86,8 @@ def _maybe_write_codex_config(cfg: ParitokConfig, host: str, port: int) -> None:
         keymode = "key from paritok.yaml"
     else:
         keymode = "env OPENAI_API_KEY"
-    click.echo(f"Codex: wrote {path} (model={cfg.codex.model}, {keymode}). "
+    model_desc = cfg.codex.model or "Codex picks"
+    click.echo(f"Codex: wrote {path} (model={model_desc}, {keymode}). "
                f"Just run `codex` in another shell.")
 
 

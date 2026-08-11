@@ -55,6 +55,16 @@ def test_codex_config_api_key_mode_needs_subscription_false():
     assert "requires_openai_auth" not in body
 
 
+def test_codex_config_empty_model_omits_model_line():
+    # Empty model → no `model =` line, so Codex chooses (needed for ChatGPT accounts).
+    body = render_codex_config(CodexConfig(subscription=True), "127.0.0.1", 8080)
+    assert "\nmodel = " not in ("\n" + body)
+    assert 'model_provider = "paritok"' in body
+    # Explicit model still pins it.
+    pinned = render_codex_config(CodexConfig(model="o3", subscription=True), "127.0.0.1", 8080)
+    assert 'model = "o3"' in pinned
+
+
 def test_codex_config_subscription_false_no_key_uses_env():
     body = render_codex_config(CodexConfig(model="gpt-5", subscription=False), "127.0.0.1", 8080)
     assert 'env_key = "OPENAI_API_KEY"' in body
