@@ -1,6 +1,47 @@
 """Tests for OpenAI-compatible upstream routing and error-body robustness."""
-from paritok.proxy.server import _openai_chat_url, _extract_tool_text
+from paritok.proxy.server import _openai_chat_url, _extract_tool_text, _pick_responses_upstream
 from paritok.proxy.adapters.openai import find_virtual_tool_calls
+from paritok.config import CodexConfig
+from paritok.proxy.codex_setup import render_codex_config
+
+
+CHATGPT = "https://chatgpt.com/backend-api/codex/responses"
+
+
+def test_responses_upstream_api_key_goes_to_openai():
+    # A real OpenAI key (sk-) routes to the configured OpenAI base, not ChatGPT.
+    assert _pick_responses_upstream("Bearer sk-proj-abc", "https://api.openai.com") == \
+        "https://api.openai.com/v1/responses"
+    # Honors a custom openai_base_url too.
+    assert _pick_responses_upstream("Bearer sk-abc", "http://127.0.0.1:8080") == \
+        "http://127.0.0.1:8080/v1/responses"
+
+
+def test_responses_upstream_subscription_goes_to_chatgpt_backend():
+    # A ChatGPT subscription OAuth token (not sk-) routes to the ChatGPT backend.
+    assert _pick_responses_upstream("Bearer eyJhbGciOi.oauth.token", "https://api.openai.com") == CHATGPT
+    # Case/prefix: anything that isn't a Bearer sk- key and is non-empty → ChatGPT.
+    assert _pick_responses_upstream("Bearer gho_notanopenaikey", "https://api.openai.com") == CHATGPT
+
+
+def test_responses_upstream_missing_or_malformed_auth_defaults_to_openai():
+    # No token (or non-Bearer) → default OpenAI path, never the subscription backend.
+    assert _pick_responses_upstream("", "https://api.openai.com") == "https://api.openai.com/v1/responses"
+    assert _pick_responses_upstream("Basic xyz", "https://api.openai.com") == \
+        "https://api.openai.com/v1/responses"
+
+
+def test_codex_config_subscription_uses_oauth_not_key():
+    body = render_codex_config(CodexConfig(model="gpt-5", subscription=True), "127.0.0.1", 8080)
+    assert "requires_openai_auth = true" in body
+    assert "experimental_bearer_token" not in body
+    assert "env_key" not in body
+
+
+def test_codex_config_api_key_mode_embeds_bearer():
+    body = render_codex_config(CodexConfig(model="gpt-5", api_key="sk-proj-XXX"), "127.0.0.1", 8080)
+    assert 'experimental_bearer_token = "sk-proj-XXX"' in body
+    assert "requires_openai_auth" not in body
 
 
 def test_openai_chat_url_appends_suffix_for_base_hosts():

@@ -102,15 +102,22 @@ class CodexConfig:
     for the user (backing up any existing one) so everything lives here in
     paritok.yaml — flip the switch, paste your key, done.
 
-    `api_key` is embedded into the generated config.toml as
-    `experimental_bearer_token`; leave it empty to fall back to Codex reading
-    `env_key` (OPENAI_API_KEY) from the environment instead. Codex custom
-    providers only support the `responses` wire protocol, so that is fixed.
+    Two auth modes:
+      - API key (default): `api_key` is embedded as `experimental_bearer_token`
+        (empty → Codex reads `env_key` OPENAI_API_KEY from the environment).
+      - ChatGPT subscription (`subscription: true`): the generated provider sets
+        `requires_openai_auth = true` and carries NO key, so Codex attaches its
+        own logged-in OAuth token. That token reaches the proxy at
+        `/v1/responses`, which forwards it to the ChatGPT backend
+        (chatgpt.com/backend-api/codex/responses). Run `codex login` first.
+    Codex custom providers only support the `responses` wire protocol, so that
+    is fixed.
     """
 
     enabled: bool = False
     model: str = "gpt-5"
     api_key: str = ""  # OpenAI key, embedded into ~/.codex/config.toml (empty → use env OPENAI_API_KEY)
+    subscription: bool = False  # true → use the logged-in ChatGPT OAuth (requires_openai_auth) instead of a key
     config_path: str = ""  # override the generated config.toml location (empty → ~/.codex/config.toml)
 
 

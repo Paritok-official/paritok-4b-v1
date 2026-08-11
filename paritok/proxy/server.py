@@ -224,6 +224,23 @@ def _extract_tool_text(content):
     return None, None
 
 
+def _pick_responses_upstream(authorization: str, openai_base_url: str) -> str:
+    """Choose the upstream for a Codex `/v1/responses` request by auth type.
+
+    Codex keeps its own credentials and sends them here:
+      - API key (`Bearer sk-...`)              → {openai_base_url}/v1/responses
+      - ChatGPT subscription (OAuth, not `sk-`) → chatgpt.com/backend-api/codex/responses
+
+    The Authorization header (and chatgpt-account-id / originator) is relayed
+    unchanged, so the subscription token is accepted by the ChatGPT backend just
+    as if Codex had called it directly. Module-level for unit testing.
+    """
+    token = authorization[len("Bearer "):] if authorization.startswith("Bearer ") else ""
+    if token and not token.startswith("sk-"):
+        return "https://chatgpt.com/backend-api/codex/responses"
+    return f"{openai_base_url}/v1/responses"
+
+
 def _to_responses_tool(t: dict) -> dict:
     """Render one tool in the flat Responses shape.
 
@@ -714,7 +731,7 @@ def create_app(
             parsed.instructions = _prepend_ref_guidance_responses(parsed.instructions)
 
         headers = _forward_headers(request)
-        url = f"{openai_base_url}/v1/responses"
+        url = _pick_responses_upstream(request.headers.get("authorization", ""), openai_base_url)
         forward_body = parsed.to_dict()
 
         if parsed.stream:

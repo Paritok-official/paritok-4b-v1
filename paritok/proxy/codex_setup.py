@@ -1,13 +1,17 @@
 """Generate `~/.codex/config.toml` so Codex routes through the Paritok proxy.
 
-Codex does not honor `OPENAI_BASE_URL`; its endpoint comes only from a custom
-`model_provider` in `~/.codex/config.toml`. Rather than make users hand-write
-TOML, `paritok up`/`proxy` writes it from the `codex:` block in paritok.yaml when
-`codex.enabled` is true — so the whole setup lives in one file.
+Codex does not honor the `OPENAI_BASE_URL` env var; its endpoint comes only from
+a custom `model_provider` in `~/.codex/config.toml`. Rather than make users
+hand-write TOML, `paritok up`/`proxy` writes it from the `codex:` block in
+paritok.yaml when `codex.enabled` is true — so the whole setup lives in one file.
 
 Codex custom providers support only the `responses` wire protocol (which the
-proxy serves at `/v1/responses`), and have no literal api_key field, so the key
-is embedded as `experimental_bearer_token` (or left to `env_key` when blank).
+proxy serves at `/v1/responses`). Two auth modes:
+  - API key: embedded as `experimental_bearer_token` (or left to `env_key`
+    OPENAI_API_KEY when blank).
+  - ChatGPT subscription (`codex.subscription: true`): the provider carries no
+    key and sets `requires_openai_auth = true`, so Codex sends its own logged-in
+    OAuth token to the proxy, which forwards it to the ChatGPT backend.
 """
 
 from __future__ import annotations
@@ -39,7 +43,12 @@ def render_codex_config(cfg: CodexConfig, host: str, port: int) -> str:
         f'base_url = "{base_url}"',
         'wire_api = "responses"',
     ]
-    if cfg.api_key:
+    if cfg.subscription:
+        # Use the logged-in ChatGPT OAuth token (no static key). Codex sends it
+        # to base_url; the proxy detects the non-`sk-` bearer and forwards to the
+        # ChatGPT backend. Requires `codex login`.
+        lines.append("requires_openai_auth = true")
+    elif cfg.api_key:
         lines.append(f'experimental_bearer_token = "{_toml_escape(cfg.api_key)}"')
     else:
         # No key in paritok.yaml → Codex reads it from the environment instead.
