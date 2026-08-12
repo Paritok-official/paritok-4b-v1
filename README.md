@@ -434,8 +434,8 @@ Real end-to-end evaluation. An agent scaffold receives its context through each 
 
 Paritok is built by two engineers — no big lab, no external funding, just months of GPU budget and eval iteration.
 
-- **Jiayu Shi** — training, modeling, reward design, data pipeline.
-- **Luzhuo Chen** — evaluation, deployment, product, data pipeline.
+- **Jiayu Shi** — Architecture of the 4B on-device compression model, data pipeline (cleaning + construction), reward design and fine-tuning.
+- **Luzhuo Chen** — Inference acceleration, full-stack architecture and deployment, evaluation framework, high-concurrency gateway optimization.
 
 Reach us: [paritok9@gmail.com](mailto:paritok9@gmail.com) · X [@Paritok](https://x.com/Paritok)
 
