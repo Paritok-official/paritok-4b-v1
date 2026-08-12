@@ -59,18 +59,64 @@ def normalize_input(inp) -> list:
     return list(inp or [])
 
 
-def extract_query(inp) -> str | None:
-    """Latest user text from a Responses `input`."""
+def _message_text(content, part_type: str) -> str | None:
+    """Join the `part_type` text parts of a message `content` (a bare string or a list of
+    parts). Returns the joined text or None if there is none."""
+    if isinstance(content, str):
+        return content.strip() or None
+    if isinstance(content, list):
+        texts = [p.get("text", "") for p in content
+                 if isinstance(p, dict) and p.get("type") in (part_type, "text")
+                 and p.get("text", "").strip()]
+        if texts:
+            return " ".join(texts).strip() or None
+    return None
+
+
+def _extract_task(inp) -> str | None:
+    """The user's task text — the latest user message (`input_text`)."""
     for item in reversed(normalize_input(inp)):
         if item.get("type", "message") == "message" and item.get("role") == "user":
-            content = item.get("content")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") in ("input_text", "text"):
-                        return part.get("text", "")
+            t = _message_text(item.get("content"), "input_text")
+            if t:
+                return t
     return None
+
+
+def _latest_assistant_intent(inp) -> str | None:
+    """The agent's most recent narration/reasoning — its CURRENT intent, what motivated the
+    newest tool output we're about to compress. Prefer the assistant's visible message text
+    (`output_text`); fall back to a `reasoning` item's summary. Distinguishes assistant from
+    user by content-part type (`output_text` vs `input_text`), so a missing `role` is fine."""
+    for item in reversed(normalize_input(inp)):
+        itype = item.get("type", "message")
+        if itype == "message" and item.get("role") != "user":
+            t = _message_text(item.get("content"), "output_text")
+            if t:
+                return t
+        elif itype == "reasoning":
+            summary = item.get("summary")
+            if isinstance(summary, list):
+                texts = [s.get("text", "") for s in summary
+                         if isinstance(s, dict) and s.get("type") == "summary_text"
+                         and s.get("text", "").strip()]
+                if texts:
+                    return " ".join(texts).strip()
+    return None
+
+
+def extract_query(inp) -> str | None:
+    """Compression intent, mirroring the Anthropic (Claude Code) adapter. The 4B keeps what
+    the intent NAMES and drops the rest, so a static task prompt ("fix the bug in
+    answer_question") drops the exact code the agent is digging into right now (`quick_eval`)
+    -- forcing it to re-search. Prefer the agent's LATEST narration/reasoning (current
+    intent) so the compressor keeps the code in play, carrying the overall task as trailing
+    context. Falls back to the task alone on turn 0 (no assistant text yet)."""
+    reasoning = _latest_assistant_intent(inp)
+    task = _extract_task(inp)
+    if reasoning:
+        return f"{reasoning[:900]}\n(overall task: {task[:200]})" if task else reasoning[:900]
+    return task
 
 
 def find_virtual_function_calls(response_body: dict) -> list[dict]:
