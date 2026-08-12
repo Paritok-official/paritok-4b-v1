@@ -32,10 +32,11 @@ import json
 import re
 from dataclasses import dataclass
 
-from paritok.pipelines.edit_recovery import recover_edit
+from paritok.pipelines.edit_recovery import _LINE_COMMENT, recover_edit
 
-# Keys under a Responses `function_call.arguments` object that hold a shell command.
-_COMMAND_KEYS = ("command", "cmd", "script", "input")
+# Keys under a Responses `function_call.arguments` object that hold a shell command OR an
+# apply_patch body (codex's `apply_patch` tool passes the patch under `input`/`patch`).
+_COMMAND_KEYS = ("command", "cmd", "script", "input", "patch")
 
 # Characters that make re-quoting a spliced literal ambiguous across shells/quote styles.
 # If a recovered literal contains any, we abstain rather than risk a broken command.
@@ -253,6 +254,121 @@ def rewrite_shell_command(command: str, resolve):
     return command, n
 
 
+# ── apply_patch recovery ──────────────────────────────────────────────────────
+#
+# Codex's other edit path is the `apply_patch` tool, whose body is a V4A patch:
+#
+#     *** Begin Patch
+#     *** Update File: path/to/file.py
+#     @@ def answer_question(...):
+#         context line
+#     -    max_retries = -1
+#     +    max_retries = 3
+#     *** End Patch
+#
+# apply_patch locates each hunk by its context + removed (`-`) lines EXACTLY. When the
+# file read codex saw was compressed, those old-side lines dropped a trailing comment /
+# reflowed, so apply_patch fails with "Failed to find expected lines" and codex thrashes.
+# We map each hunk's old-side block back onto the true file (comment/whitespace-insensitive,
+# unique-match only) and rewrite those lines in place — the `+` added lines are codex's
+# intended change and are never touched.
+
+_PATCH_MARKER = "*** Begin Patch"
+
+
+def _canon_line(line: str) -> str:
+    """Canonicalize one code line the way the compression lint does: drop a trailing
+    `# ...` comment, then all whitespace. So `    max_retries = -1  ##__o|o__` and the
+    summary's `max_retries = -1` collapse to the same key."""
+    return "".join(_LINE_COMMENT.sub("", line).split())
+
+
+def _match_line_window(old_lines: list[str], original: str) -> list[str] | None:
+    """Return the real file's lines (FULL, with their true indentation) that canonically
+    match `old_lines`, or None unless exactly one contiguous window matches. Line-based (not
+    `match_region`) so indentation is preserved verbatim — apply_patch is indent-sensitive."""
+    co = [_canon_line(l) for l in old_lines]
+    if not co or all(c == "" for c in co):
+        return None  # nothing distinctive to anchor on
+    orig_lines = original.split("\n")
+    n = len(co)
+    hits = [
+        s for s in range(len(orig_lines) - n + 1)
+        if [_canon_line(orig_lines[s + k]) for k in range(n)] == co
+    ]
+    if len(hits) != 1:
+        return None
+    s = hits[0]
+    return orig_lines[s:s + n]
+
+
+def rewrite_apply_patch(patch_text: str, originals) -> tuple[str, int]:
+    """Rewrite the old-side (context + removed) lines of each hunk in an apply_patch body so
+    they match the true file, recovered from `originals` (candidate real file contents).
+
+    Returns (new_patch, n_hunks_rewritten); the text is returned unchanged when it is not a
+    patch, no original matches, or a hunk can't be mapped 1:1 (codex then re-reads)."""
+    originals = [o for o in (originals or []) if o]
+    if not originals or not patch_text or _PATCH_MARKER not in patch_text:
+        return patch_text, 0
+
+    lines = patch_text.split("\n")
+    # Group old-side line indices (context ` ` / removed `-`) per hunk. A hunk ends at a
+    # `@@` anchor, a `*** ...` header, an added `+` line does NOT end it, and any other line
+    # (blank/heredoc wrapper) ends it.
+    hunks: list[list[int]] = []
+    cur: list[int] = []
+
+    def _flush() -> None:
+        nonlocal cur
+        if cur:
+            hunks.append(cur)
+            cur = []
+
+    for idx, ln in enumerate(lines):
+        if ln.startswith("*** ") or ln.startswith("@@"):
+            _flush()
+            continue
+        c = ln[:1]
+        if c in (" ", "-"):
+            cur.append(idx)
+        elif c == "+":
+            continue  # added line: part of the hunk, but not old-side
+        else:
+            _flush()
+    _flush()
+
+    n = 0
+    for hunk in hunks:
+        old_lines = [lines[i][1:] for i in hunk]  # strip the 1-char ` `/`-` prefix
+        real_lines = None
+        for original in originals:
+            real_lines = _match_line_window(old_lines, original)
+            if real_lines is not None:
+                break
+        if real_lines is None or real_lines == old_lines:
+            continue  # can't locate uniquely, or already matches — leave it
+        for j, i in enumerate(hunk):
+            lines[i] = lines[i][:1] + real_lines[j]  # keep the ` `/`-` prefix
+        n += 1
+
+    if not n:
+        return patch_text, 0
+    return "\n".join(lines), n
+
+
+def rewrite_edit_command(value: str, resolve) -> tuple[str, int]:
+    """Rewrite one command/patch string: try shell literal-replaces first, then, if that
+    changed nothing and it looks like an apply_patch, rewrite the patch hunks. `resolve` is
+    the shell callable `resolve(command) -> Iterable[str]` of candidate originals."""
+    new_val, n = rewrite_shell_command(value, resolve)
+    if n:
+        return new_val, n
+    if _PATCH_MARKER in value:
+        return rewrite_apply_patch(value, resolve(value))
+    return value, 0
+
+
 def rewrite_function_call_arguments(arguments_json: str, originals):
     """Rewrite the shell command inside a codex Responses `function_call.arguments` JSON
     string so any literal file-replace matches the true file. Handles a command held as a
@@ -276,14 +392,14 @@ def rewrite_function_call_arguments(arguments_json: str, originals):
     for k in _COMMAND_KEYS:
         v = args.get(k)
         if isinstance(v, str) and v.strip():
-            nv, n = rewrite_shell_command(v, resolve)
+            nv, n = rewrite_edit_command(v, resolve)
             if n:
                 args[k] = nv
                 total += n
         elif isinstance(v, list) and v and all(isinstance(x, str) for x in v):
             new_list, hits = [], 0
             for el in v:
-                ne, n = rewrite_shell_command(el, resolve)
+                ne, n = rewrite_edit_command(el, resolve)
                 new_list.append(ne)
                 hits += n
             if hits:
@@ -292,3 +408,22 @@ def rewrite_function_call_arguments(arguments_json: str, originals):
     if not total:
         return arguments_json, 0
     return json.dumps(args), total
+
+
+def rewrite_tool_call_input(text: str, originals):
+    """Rewrite a codex `custom_tool_call.input` — a RAW command/patch string (codex's newer
+    freeform tools), or occasionally a JSON args object. Returns (new_text, n_rewritten).
+
+    Delegates JSON objects to `rewrite_function_call_arguments`; a raw string is run through
+    both the shell-replace and apply_patch recovery paths."""
+    originals = [o for o in (originals or []) if o]
+    if not text or not text.strip() or not originals:
+        return text, 0
+    stripped = text.lstrip()
+    if stripped[:1] == "{":  # looks like a JSON args object
+        try:
+            if isinstance(json.loads(text), dict):
+                return rewrite_function_call_arguments(text, originals)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return rewrite_edit_command(text, lambda _cmd: originals)
