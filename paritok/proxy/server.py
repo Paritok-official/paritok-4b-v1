@@ -538,10 +538,14 @@ def create_app(
             return JSONResponse(content=resp.json(), status_code=resp.status_code,
                                 headers=_relay_headers(resp))
 
-        # Use shared engine for compression + tool discovery
+        # Use shared engine for compression + tool discovery. process_request does
+        # BLOCKING 4B inference (sync httpx), so run it in a worker thread — otherwise it
+        # freezes the whole event loop for the entire compression, stalling health checks,
+        # count_tokens, and every other in-flight session until it returns.
         client_tools = parsed.tools  # the caller's full tool schemas, pre-stub
-        parsed.messages, parsed.tools, stats, stubbed = engine.process_request(
-            parsed.messages, parsed.tools, upstream_model=body.get("model", "")
+        parsed.messages, parsed.tools, stats, stubbed = await asyncio.to_thread(
+            engine.process_request, parsed.messages, parsed.tools,
+            upstream_model=body.get("model", ""),
         )
 
         tools_orig_tok = _tools_tokens(client_tools)
@@ -625,7 +629,9 @@ def create_app(
         if parsed.tools:
             raw_tools = [t.get("function", t) for t in parsed.tools]
 
-        _, processed_tools, stats, stubbed = engine.process_request(parsed.messages, raw_tools)
+        _, processed_tools, stats, stubbed = await asyncio.to_thread(
+            engine.process_request, parsed.messages, raw_tools
+        )  # off the event loop — blocking 4B inference (see handle_anthropic)
 
         # Compress tool messages (OpenAI uses role="tool" instead of tool_result blocks).
         # `content` may be a plain string OR a list of content parts — extract the text
@@ -779,10 +785,15 @@ def create_app(
             return header + cr.compressed
 
         if can_expand:
-            for i, item in enumerate(input_items):
-                new_item, changed = _compress_responses_item(item, _compress_codex_text)
-                if changed:
-                    input_items[i] = new_item
+            # Blocking 4B inference (sync httpx) — run off the event loop so a slow
+            # compression can't freeze health checks / count_tokens / other sessions.
+            def _compress_all_items() -> None:
+                for i, item in enumerate(input_items):
+                    new_item, changed = _compress_responses_item(item, _compress_codex_text)
+                    if changed:
+                        input_items[i] = new_item
+
+            await asyncio.to_thread(_compress_all_items)
 
         # Inject virtual tools, then convert to the flat Responses tool shape.
         if tools is not None:
@@ -820,6 +831,38 @@ def create_app(
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
         final_body = _recover_codex_edits(final_body, codex_read_bodies)
         return JSONResponse(content=final_body, status_code=status_code, headers=resp_headers)
+
+    # ── Anthropic token counting ──
+
+    async def handle_count_tokens(request: Request) -> Response:
+        """`/v1/messages/count_tokens`, computed LOCALLY. Claude Code calls this every turn
+        to size its context and decide when to auto-compact. Left unimplemented it 404s, and
+        Claude Code falls back to its own estimate over the FULL uncompressed conversation —
+        so it auto-compacts early instead of letting paritok's compression extend the window.
+
+        We compress the payload exactly as the real /v1/messages path would (in a worker
+        thread; reusing the SHA256 compression cache, so the subsequent /v1/messages reuses
+        it and the 4B fires at most once per payload) and count the COMPRESSED result. The
+        meter then reflects what paritok actually sends upstream, so Claude Code sees the
+        extended window and stops compacting prematurely. Counting is local tiktoken (a few
+        percent off for Claude, per the 'local is fine' choice) and never fails the meter:
+        any compression error falls back to counting the raw payload."""
+        body = json.loads(await request.body())
+        model = body.get("model", "")
+        try:
+            parsed = anth_adapter.parse_request(body)
+            msgs, tools, _stats, _stubbed = await asyncio.to_thread(
+                engine.process_request, parsed.messages, parsed.tools, upstream_model=model
+            )
+            system = parsed.system
+        except Exception:
+            logger.exception("count_tokens: compression failed; counting raw payload")
+            msgs, tools, system = (body.get("messages", []), body.get("tools"),
+                                   body.get("system"))
+        n = (count_tokens(json.dumps(msgs), model)
+             + (count_tokens(json.dumps(system), model) if system else 0)
+             + (count_tokens(json.dumps(tools), model) if tools else 0))
+        return JSONResponse({"input_tokens": n})
 
     # ── Stats / Health ──
 
@@ -1746,6 +1789,7 @@ def create_app(
     # ── Build app ──
 
     routes = [
+        Route("/v1/messages/count_tokens", handle_count_tokens, methods=["POST"]),
         Route("/v1/messages", handle_anthropic, methods=["POST"]),
         Route("/v1/chat/completions", handle_openai, methods=["POST"]),
         Route("/v1/responses", handle_responses, methods=["POST"]),
