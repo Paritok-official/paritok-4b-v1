@@ -296,6 +296,51 @@ def _split_codex_header(content: str) -> tuple[str, str]:
     return "".join(lines[:i]), "".join(lines[i:])
 
 
+def _normalize_crlf(text: str) -> str:
+    """codex reads files through PowerShell, whose output carries CRLF (`\\r\\n`)
+    line endings; Claude Code and the other agents feed the compressor clean LF.
+    Strip the `\\r` so codex's tool output is byte-identical to what every other
+    agent sends — in-distribution for the compressor — instead of an
+    `\\r`-littered variant it never trained on."""
+    if "\r" not in text:
+        return text
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _compress_responses_item(item: dict, compress_text) -> tuple[dict, bool]:
+    """Apply `compress_text(str) -> str | None` to a Responses tool-result item's
+    text, returning (new_item, changed). Handles both shapes codex uses:
+
+      - `function_call_output`: `output` is a plain string.
+      - `custom_tool_call_output` (newer custom tools like `exec`/shell): `output`
+        is a list of `{"type":"input_text","text":...}` blocks — each block's text
+        is compressed independently; non-text blocks pass through untouched.
+
+    `compress_text` returns None to skip (small/uncompressible), leaving that text
+    as-is. Pure (no I/O / stats) so it is unit-testable; the caller's closure owns
+    the actual compression, stats and read-body capture. Any other item type is
+    returned unchanged.
+    """
+    itype = item.get("type")
+    if itype == "function_call_output" and isinstance(item.get("output"), str):
+        new = compress_text(item["output"])
+        return ({**item, "output": new}, True) if new is not None else (item, False)
+    if itype == "custom_tool_call_output" and isinstance(item.get("output"), list):
+        new_output: list = []
+        changed = False
+        for blk in item["output"]:
+            if (isinstance(blk, dict) and blk.get("type") == "input_text"
+                    and isinstance(blk.get("text"), str)):
+                new_text = compress_text(blk["text"])
+                if new_text is not None:
+                    new_output.append({**blk, "text": new_text})
+                    changed = True
+                    continue
+            new_output.append(blk)
+        return ({**item, "output": new_output}, changed) if changed else (item, False)
+    return item, False
+
+
 def _has_code_signals(text: str) -> bool:
     """A few strong, code-specific tokens present at least twice — enough to tell a
     real source file from prose/log output."""
@@ -372,7 +417,10 @@ def create_app(
         _inject_virtual_tools,
     )
     from paritok.pipelines.edit_recovery import recover_edit, strip_read_line_numbers
-    from paritok.pipelines.codex_edit_recovery import rewrite_function_call_arguments
+    from paritok.pipelines.codex_edit_recovery import (
+        rewrite_function_call_arguments,
+        rewrite_tool_call_input,
+    )
     from paritok.pipelines.virtual import is_expand_call, is_virtual_tool_call
     from paritok.proxy.adapters import anthropic as anth_adapter
     from paritok.proxy.adapters import openai as oai_adapter
@@ -662,6 +710,18 @@ def create_app(
         # Tool discovery — Responses tools are flat ({"type":"function","name",...}).
         raw_tools = list(parsed.tools) if parsed.tools else None
         tools = raw_tools
+        # Modern codex declares its tools in an `additional_tools` item and leaves
+        # the top-level `tools` empty. To give it read_original we still add the
+        # tool to the top-level `tools[]` (as a standard function tool) — the model
+        # then emits a plain `function_call`, which the streaming resolve loop can
+        # intercept and expand server-side (the client never sees it). Injecting
+        # into additional_tools instead makes codex emit a custom_tool_call we
+        # can't intercept, so the client rejects it as unsupported.
+        is_codex_responses = any(
+            isinstance(it, dict) and it.get("type") == "additional_tools" for it in input_items
+        )
+        if tools is None and is_codex_responses:
+            tools = []
         stubbed: list[dict] = []
         if raw_tools and query and len(raw_tools) > config.tool_discovery.top_k:
             result = engine.discovery.filter_tools(raw_tools, query)
@@ -680,35 +740,49 @@ def create_app(
                           f"KEPT({len(tools)})={[_nm(t) for t in tools]} "
                           f"STUBBED={[_nm(t) for t in stubbed]}\n")
 
-        # Compress function_call_output items (the tool results that grow large).
+        # Only compress when the model will have a way to EXPAND a [REF:...] stub
+        # (read_original is injected into tools[] below) — otherwise it can only
+        # re-read the file, which just gets re-compressed, so it loops.
+        can_expand = tools is not None
+
+        # Compress tool-result items (the file reads / shell output that grow large).
         # Also keep each real read body (before compression): the file codex is about to
         # edit was read earlier in the conversation, so its true bytes live here — that's
         # what codex_edit_recovery maps a reflowed shell `-replace` back onto.
         codex_read_bodies: list[str] = []
-        for i, item in enumerate(input_items):
-            if (item.get("type") == "function_call_output"
-                    and isinstance(item.get("output"), str) and item["output"].strip()):
-                # codex wraps output in a shell command-output header. Compress only
-                # the body — byte-identical to what every other agent feeds the model
-                # — then re-attach the header, so the same content compresses the same
-                # way regardless of which agent produced it. (Name the local var
-                # `seg_body`, not `body`: `body` is the request dict used below.)
-                header, seg_body = _split_codex_header(item["output"])
-                if len(seg_body) > 40:
-                    codex_read_bodies.append(strip_read_line_numbers(seg_body))
-                # codex reads files without line numbers (out-of-distribution for the
-                # compressor). Feed the model a line-numbered form so it compresses
-                # like every other agent's Read output, but keep `seg_body` (the real,
-                # unnumbered content) as `content` so the ratio, stats and expand all
-                # reflect what the agent actually sent — not the numbering we injected.
-                cr = engine.pipeline.compress(seg_body, query=query,
-                                              model_input=_ensure_line_numbers(seg_body),
-                                              upstream_model=parsed.model)
-                if not cr.metadata.get("skipped"):
-                    input_items[i] = {**item, "output": header + cr.compressed}
-                    stats.original_tokens += cr.original_tokens
-                    stats.compressed_tokens += cr.compressed_tokens
-                    stats.items_compressed += 1
+
+        def _compress_codex_text(text: str) -> str | None:
+            """Compress one shell/tool-output string. Splits codex's command-output
+            header off so only the body is compressed (byte-identical to what every
+            other agent feeds the model), re-attaches it, records stats + the read
+            body. Returns the new text, or None when compression is skipped."""
+            if not isinstance(text, str) or not text.strip():
+                return None
+            # codex reads via PowerShell (CRLF); normalize to LF so the content is
+            # in-distribution for the compressor, like every other agent's output.
+            text = _normalize_crlf(text)
+            header, seg_body = _split_codex_header(text)
+            if len(seg_body) > 40:
+                codex_read_bodies.append(strip_read_line_numbers(seg_body))
+            # codex reads files without line numbers (out-of-distribution for the
+            # compressor). Feed the model a line-numbered form so it compresses like
+            # every other agent's Read output, but keep seg_body (the real, unnumbered
+            # content) as `content` so ratio/stats/expand reflect what the agent sent.
+            cr = engine.pipeline.compress(seg_body, query=query,
+                                          model_input=_ensure_line_numbers(seg_body),
+                                          upstream_model=parsed.model)
+            if cr.metadata.get("skipped"):
+                return None
+            stats.original_tokens += cr.original_tokens
+            stats.compressed_tokens += cr.compressed_tokens
+            stats.items_compressed += 1
+            return header + cr.compressed
+
+        if can_expand:
+            for i, item in enumerate(input_items):
+                new_item, changed = _compress_responses_item(item, _compress_codex_text)
+                if changed:
+                    input_items[i] = new_item
 
         # Inject virtual tools, then convert to the flat Responses tool shape.
         if tools is not None:
@@ -983,16 +1057,30 @@ def create_app(
         if not isinstance(output, list):
             return reply
         for item in output:
-            if not (isinstance(item, dict) and item.get("type") == "function_call"):
+            if not isinstance(item, dict):
                 continue
-            args_raw = item.get("arguments")
-            if not isinstance(args_raw, str):
+            itype = item.get("type")
+            if itype == "function_call":
+                args_raw = item.get("arguments")
+                if not isinstance(args_raw, str):
+                    continue
+                new_args, n = rewrite_function_call_arguments(args_raw, originals)
+                if n:
+                    item["arguments"] = new_args
+            elif itype == "custom_tool_call":
+                # Codex's newer freeform tools (incl. apply_patch) carry a raw
+                # command/patch string under `input` rather than JSON `arguments`.
+                inp = item.get("input")
+                if not isinstance(inp, str):
+                    continue
+                new_inp, n = rewrite_tool_call_input(inp, originals)
+                if n:
+                    item["input"] = new_inp
+            else:
                 continue
-            new_args, n = rewrite_function_call_arguments(args_raw, originals)
             if n:
-                item["arguments"] = new_args
                 proxy_stats.record_edit_recovery()
-                logger.info("codex edit_recovery: rewrote a shell replace to match the file")
+                logger.info("codex edit_recovery: rewrote a %s edit to match the file", itype)
         return reply
 
     def _parse_sse_to_message(raw: bytes) -> dict:
@@ -1613,6 +1701,7 @@ def create_app(
 
         raw = bytes(collected)
         final = _final_response_from_sse(raw)
+
         import os as _ruos  # TEMP per-request responses-usage diagnostic; not committed
         _rup = _ruos.environ.get("PARITOK_RESP_USAGE_LOG")
         if _rup and final:
