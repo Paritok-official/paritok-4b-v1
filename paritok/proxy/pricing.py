@@ -36,6 +36,9 @@ INPUT_USD_PER_MTOK: dict[str, float] = {
     "o4-mini": 1.10,
     "o3-mini": 1.10,
     "o3": 2.00,
+    # MiniMax
+    "minimax-m3": 0.60,
+    "minimax-m2.7": 0.30,
 }
 
 # Cache-READ multiplier: what a provider charges for an input token served from
