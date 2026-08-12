@@ -287,7 +287,7 @@ def _match_line_window(old_lines: list[str], original: str) -> list[str] | None:
     """Return the real file's lines (FULL, with their true indentation) that canonically
     match `old_lines`, or None unless exactly one contiguous window matches. Line-based (not
     `match_region`) so indentation is preserved verbatim — apply_patch is indent-sensitive."""
-    co = [_canon_line(l) for l in old_lines]
+    co = [_canon_line(ln) for ln in old_lines]
     if not co or all(c == "" for c in co):
         return None  # nothing distinctive to anchor on
     orig_lines = original.split("\n")
