@@ -126,7 +126,13 @@ class GpuServerStrategy:
         # closing tag can leak a stray opening [SEG ...] marker. Re-unwrap here so
         # the proxy's output is clean and identical regardless of that hiccup.
         from paritok.strategies.local_model import _unwrap_seg
-        return _unwrap_seg(compressed)
+        compressed = _unwrap_seg(compressed)
+        # Empty / whitespace-only body = a failed compression, not a perfect one. The
+        # GPU worker can return "" for valid non-empty input; never hand back an empty
+        # prompt — pass the original through, like any other failure (issue #38).
+        if content.strip() and not compressed.strip():
+            return content
+        return compressed
 
     def check(self) -> tuple[bool, str]:
         """Probe {base_url}/test WITH the API key. Returns (available, message).

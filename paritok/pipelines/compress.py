@@ -270,6 +270,14 @@ class CompressionPipeline:
             )
             return self._skip(content, original_tokens, f"backend_error:{type(e).__name__}")
 
+        # 5b. An empty / whitespace-only body is a FAILED compression, not a perfect
+        # one. count_tokens("") == 0 makes savings_ratio ≈ 1.0, which would sail past
+        # the refusal-threshold check below and forward an EMPTY prompt for non-empty
+        # input (the hosted /api/compress could relay "" straight from the GPU worker).
+        # Keep the original — never emit empty compressed output (issue #38).
+        if content.strip() and not (isinstance(compressed, str) and compressed.strip()):
+            return self._skip(content, original_tokens, "empty_compression")
+
         # 6. Effectiveness check
         compressed_tokens = count_tokens(compressed, enc)
         savings_ratio = 1 - compressed_tokens / original_tokens if original_tokens > 0 else 0
