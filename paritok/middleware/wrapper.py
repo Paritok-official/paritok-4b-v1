@@ -557,6 +557,13 @@ def _compress_history(
         return messages
 
     stats.history_turns_compressed = len(old_messages)
+    # Fold the history savings into the token stats so /stats reports them. Previously
+    # only the turn count was recorded, so history compression's tokens_saved was
+    # invisible on /stats (both proxy paths route through here). old_text is what was
+    # actually handed to the summarizer, so it's a conservative "original" measure.
+    stats.original_tokens += count_tokens(old_text)
+    stats.compressed_tokens += count_tokens(summary)
+    stats.items_compressed += 1
 
     # Keeping only the recent turns can orphan a tool_result whose matching tool_use
     # lived in an old turn we just folded into the summary. The Anthropic API rejects
