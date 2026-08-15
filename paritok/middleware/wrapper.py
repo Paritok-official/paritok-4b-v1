@@ -88,6 +88,7 @@ class ParitokEngine:
         messages: list[dict],
         tools: list[dict] | None = None,
         upstream_model: str = "",
+        query: str | None = None,
     ) -> tuple[list[dict], list[dict] | None, CompressionStats, list[dict]]:
         """Process a request: compress context, filter tools, inject virtuals.
 
@@ -104,7 +105,9 @@ class ParitokEngine:
             resolve_virtual_call. Caller must store this per-request.
         """
         stats = CompressionStats()
-        query = _extract_query(messages)
+        # A caller can pass the compression intent explicitly (e.g. the proxy's
+        # current-intent adapter query, #4); otherwise fall back to the task text.
+        query = query if query is not None else _extract_query(messages)
         session_id = _conversation_id(messages)
         stubbed_tools: list[dict] = []
 

@@ -43,19 +43,57 @@ def parse_request(body: dict) -> ParsedRequest:
     )
 
 
-def extract_query(messages: list[dict]) -> str | None:
-    """Extract user's latest query from OpenAI messages."""
+def _message_text(content) -> str | None:
+    """Text of an OpenAI message `content` (a plain string or a list of
+    {type:'text', text} parts). Returns None when there is no non-blank text."""
+    if isinstance(content, str):
+        return content.strip() or None
+    if isinstance(content, list):
+        texts = [p.get("text", "") for p in content
+                 if isinstance(p, dict) and p.get("type") == "text" and p.get("text", "").strip()]
+        joined = " ".join(texts).strip()
+        return joined or None
+    return None
+
+
+def _latest_assistant_reasoning(messages: list[dict]) -> str | None:
+    """The agent's most recent narration/reasoning (the text it emitted alongside its
+    latest tool call). This is the CURRENT intent — what the agent is doing right now —
+    which motivated the newest tool result we're about to compress. Assistant messages
+    that are pure tool calls carry no text and are skipped."""
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        text = _message_text(msg.get("content"))
+        if text:
+            return text
+    return None
+
+
+def _extract_task(messages: list[dict]) -> str | None:
+    """The user's task instruction (latest real user text). Tool outputs are separate
+    role='tool' messages, so this skips them and lands on the actual instruction."""
     for msg in reversed(messages):
         if msg.get("role") != "user":
             continue
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    return part.get("text", "")
+        text = _message_text(msg.get("content"))
+        if text:
+            return text
     return None
+
+
+def extract_query(messages: list[dict]) -> str | None:
+    """Compression intent (#4). The 4B keeps what the intent NAMES and drops the rest, so
+    a static task prompt ("fix the bug in answer_question") drops the exact code the agent
+    is digging into right now — forcing a re-search. Prefer the agent's LATEST reasoning
+    (current intent) so the compressor keeps the code in play, carrying the overall task as
+    trailing context. Falls back to the task alone on turn 0 (no assistant text yet).
+    Mirrors the Anthropic (Claude Code) and Responses (Codex) adapters."""
+    reasoning = _latest_assistant_reasoning(messages)
+    task = _extract_task(messages)
+    if reasoning:
+        return f"{reasoning[:900]}\n(overall task: {task[:200]})" if task else reasoning[:900]
+    return task
 
 
 def extract_tool_results(messages: list[dict]) -> list[tuple[int, dict]]:
