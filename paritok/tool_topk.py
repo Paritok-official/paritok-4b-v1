@@ -167,8 +167,13 @@ class SessionFrozenSelector:
     """Selects tools ONCE per session (first turn), then freezes the choice.
 
     Immune to MCP async-load jitter (tool pool growing 60->89 across early turns)
-    and keeps tools[] byte-stable turn-to-turn => KV-cache friendly. Extra tools
-    can be added later via add_to_frozen() (lazy recovery)."""
+    and keeps tools[] byte-stable turn-to-turn => KV-cache friendly.
+
+    Note: the frozen set is never mutated mid-session. Recovering a dropped tool is
+    done by delivering its schema in a tool_result message (see recover_tools_from_help
+    / gateway_search_tools) — NOT by adding it back to tools[]. Re-emitting tools[]
+    would invalidate the prompt-cache prefix (a full re-write of tools + system +
+    history), so recovery is deliberately kept cache-safe."""
     def __init__(self, alpha: float = 0.9, k_min: int = 5, k_max: int = 8):
         self.alpha, self.k_min, self.k_max = alpha, k_min, k_max
         self._sel = TopKToolSelector()
@@ -185,14 +190,6 @@ class SessionFrozenSelector:
         if len(tools) > self.k_min:
             self._frozen[session_id] = chosen
         return chosen
-
-    def add_to_frozen(self, session_id: str, names: Iterable[str]) -> None:
-        """Permanently add recovered tools to this session's frozen set (lazy recovery),
-        so once a tool is needed it stays available for the rest of the session."""
-        cur = self._frozen.setdefault(session_id, [])
-        for n in names:
-            if n not in cur:
-                cur.append(n)
 
 
 def _is_mcp(name: str) -> bool:
@@ -311,12 +308,7 @@ def predict_topk_dynamic(user_message: str, tools: Iterable[dict],
 
 
 def predict_topk_frozen(session_id: str, user_message: str, tools: Iterable[dict]) -> list[str]:
-    """Session-frozen selection (k_max=8). Same set for the whole session; recovered
-    tools can be pinned via register_recovered_tools()."""
+    """Session-frozen selection (k_max=8). Same set for the whole session. Dropped
+    tools are recovered by returning their schema in a tool_result (cache-safe), never
+    by mutating this frozen set — re-emitting tools[] would bust the prompt cache."""
     return _frozen_default.select(session_id, user_message, list(tools))
-
-
-def register_recovered_tools(session_id: str, names: Iterable[str]) -> None:
-    """After lazy recovery, pin the recovered tools into the session's frozen set so
-    they stay available for the rest of the session (avoids repeat misses)."""
-    _frozen_default.add_to_frozen(session_id, names)

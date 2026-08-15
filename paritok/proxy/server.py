@@ -629,16 +629,28 @@ def create_app(
         if parsed.tools:
             raw_tools = [t.get("function", t) for t in parsed.tools]
 
-        _, processed_tools, stats, stubbed = await asyncio.to_thread(
-            engine.process_request, parsed.messages, raw_tools
+        # Current-intent compression query (#4): prefer the agent's LATEST reasoning
+        # over the stale original task. Computed from the ORIGINAL messages (which still
+        # carry the assistant reasoning + tool turns) and threaded into process_request
+        # so BOTH history and tool-output compression use it.
+        query = oai_adapter.extract_query(parsed.messages)
+        processed_messages, processed_tools, stats, stubbed = await asyncio.to_thread(
+            engine.process_request, parsed.messages, raw_tools, query=query,
         )  # off the event loop — blocking 4B inference (see handle_anthropic)
+        # Keep process_request's compressed messages (issue #40): step 3 folds old
+        # conversation history into a summary and returns it here. The OpenAI path used
+        # to drop this (`_,`) and forward the uncompressed originals, so long sessions
+        # went upstream in full. Step 2 (Anthropic tool_result compression) is a no-op
+        # for OpenAI's role:"tool" messages — the loop below compresses those — so
+        # adopting processed_messages does not double-compress.
+        parsed.messages = processed_messages
 
         # Compress tool messages (OpenAI uses role="tool" instead of tool_result blocks).
         # `content` may be a plain string OR a list of content parts — extract the text
         # either way, compress it, and put it back in the original shape (see
         # _extract_tool_text). gptme/Claude-Code-OpenAI use the list form; string-only
-        # handling here silently skipped their file reads.
-        query = oai_adapter.extract_query(parsed.messages)
+        # handling here silently skipped their file reads. Reuses the current-intent
+        # `query` computed above.
         for i, msg in enumerate(parsed.messages):
             if msg.get("role") != "tool":
                 continue
