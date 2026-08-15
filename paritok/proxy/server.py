@@ -483,6 +483,21 @@ def create_app(
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
 
+    def _finalize_stats(status_code: int, stats, model: str,
+                        tools_orig_tok: int, tools_comp_tok: int) -> None:
+        """Fold one COMPLETED request into /stats — but only when the upstream
+        actually returned a usable completion. A failed forward (a 429 rate limit,
+        a 5xx, or a connect/timeout we surfaced as 502/504) is not counted at all:
+        neither /stats nor the hosted tool-meter records anything for it. Without
+        this, a rate-limited turn the agent got no answer from still inflated
+        tokens_saved / total_requests (issue #19). Call exactly once per request,
+        after the forward's outcome is known."""
+        if 200 <= status_code < 300:
+            proxy_stats.record(stats, model=model,
+                               tools_original_tokens=tools_orig_tok,
+                               tools_compressed_tokens=tools_comp_tok)
+            _report_tool_savings(model, tools_orig_tok, tools_comp_tok)
+
     # ── Anthropic handler ──
 
     async def handle_anthropic(request: Request) -> Response:
@@ -550,10 +565,11 @@ def create_app(
 
         tools_orig_tok = _tools_tokens(client_tools)
         tools_comp_tok = _tools_tokens(parsed.tools)
-        proxy_stats.record(stats, model=body.get("model", ""),
-                           tools_original_tokens=tools_orig_tok,
-                           tools_compressed_tokens=tools_comp_tok)
-        _report_tool_savings(body.get("model", ""), tools_orig_tok, tools_comp_tok)
+        # Defer /stats accounting until we know the forward's outcome — a 429 or
+        # other failed upstream must not be credited with savings (issue #19).
+        model = body.get("model", "")
+        def _finalize(status_code):
+            _finalize_stats(status_code, stats, model, tools_orig_tok, tools_comp_tok)
 
         query = anth_adapter.extract_query(parsed.messages)
         logger.info("Request #%d, saved %d tokens, query=%s",
@@ -604,15 +620,18 @@ def create_app(
                 _fh.write(f"msgs={_nmsg} n_tools={len(_tn)} tools_tok={_ttok} sys_tok={_systok} msg_tok={_msgtok} dups={_dups} virtual={_virt}\n")
 
         if parsed.stream:
-            return await _stream_anthropic(url, headers, forward_body, stubbed)
+            return await _stream_anthropic(url, headers, forward_body, stubbed, _finalize)
         try:
             final_body, status_code, resp_headers = await _anthropic_resolve(
                 url, headers, forward_body, stubbed
             )
         except httpx.ConnectError as e:
+            _finalize(502)
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
+            _finalize(504)
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        _finalize(status_code)
         final_body = _recover_edits(final_body)
         return JSONResponse(content=final_body, status_code=status_code, headers=resp_headers)
 
@@ -687,10 +706,11 @@ def create_app(
 
         tools_orig_tok = _tools_tokens(client_tools)
         tools_comp_tok = _tools_tokens(parsed.tools)
-        proxy_stats.record(stats, model=body.get("model", ""),
-                           tools_original_tokens=tools_orig_tok,
-                           tools_compressed_tokens=tools_comp_tok)
-        _report_tool_savings(body.get("model", ""), tools_orig_tok, tools_comp_tok)
+        # Defer /stats accounting until the forward's outcome is known — a failed
+        # upstream (429, 5xx, ...) must not be credited with savings (issue #19).
+        model = body.get("model", "")
+        def _finalize(status_code):
+            _finalize_stats(status_code, stats, model, tools_orig_tok, tools_comp_tok)
 
         # If expand_context was injected, tell the model (once, via system) about the
         # [REF:] convention. The proxy resolves expand_context server-side (same as the
@@ -704,15 +724,18 @@ def create_app(
         forward_body = parsed.to_dict()
 
         if parsed.stream:
-            return await _stream_openai(url, headers, forward_body, stubbed)
+            return await _stream_openai(url, headers, forward_body, stubbed, _finalize)
         try:
             final_body, status_code, resp_headers = await _openai_resolve(
                 url, headers, forward_body, stubbed
             )
         except httpx.ConnectError as e:
+            _finalize(502)
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
+            _finalize(504)
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        _finalize(status_code)
         return JSONResponse(content=final_body, status_code=status_code, headers=resp_headers)
 
     # ── OpenAI Responses API handler (Codex) ──
@@ -819,10 +842,11 @@ def create_app(
 
         tools_orig_tok = _tools_tokens(raw_tools)
         tools_comp_tok = _tools_tokens(parsed.tools)
-        proxy_stats.record(stats, model=body.get("model", ""),
-                           tools_original_tokens=tools_orig_tok,
-                           tools_compressed_tokens=tools_comp_tok)
-        _report_tool_savings(body.get("model", ""), tools_orig_tok, tools_comp_tok)
+        # Defer /stats accounting until the forward's outcome is known — a failed
+        # upstream (429, 5xx, ...) must not be credited with savings (issue #19).
+        model = body.get("model", "")
+        def _finalize(status_code):
+            _finalize_stats(status_code, stats, model, tools_orig_tok, tools_comp_tok)
 
         if parsed.tools and any(is_expand_call(t.get("name", "")) for t in parsed.tools):
             parsed.instructions = _prepend_ref_guidance_responses(parsed.instructions)
@@ -832,15 +856,19 @@ def create_app(
         forward_body = parsed.to_dict()
 
         if parsed.stream:
-            return await _stream_responses(url, headers, forward_body, stubbed, codex_read_bodies)
+            return await _stream_responses(url, headers, forward_body, stubbed,
+                                           codex_read_bodies, _finalize)
         try:
             final_body, status_code, resp_headers = await _responses_resolve(
                 url, headers, forward_body, stubbed
             )
         except httpx.ConnectError as e:
+            _finalize(502)
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
+            _finalize(504)
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        _finalize(status_code)
         final_body = _recover_codex_edits(final_body, codex_read_bodies)
         return JSONResponse(content=final_body, status_code=status_code, headers=resp_headers)
 
@@ -1275,10 +1303,13 @@ def create_app(
         return StreamingResponse(_emit_once(payload), media_type="text/event-stream",
                                  status_code=status, headers=_STREAM_HEADERS)
 
-    async def _stream_anthropic(url, headers, body, stubbed_tools):
+    async def _stream_anthropic(url, headers, body, stubbed_tools, finalize=None):
         """Pull the upstream stream into memory. With no virtual tool call present,
         hand the exact bytes to the client. Otherwise re-run non-streaming, resolve,
-        and rebuild the event stream from the finished message."""
+        and rebuild the event stream from the finished message.
+
+        `finalize(status)` folds this request into /stats once the upstream status
+        is known, so a failed stream isn't credited with savings (issue #19)."""
         collected = bytearray()
         status = 200
         try:
@@ -1288,9 +1319,15 @@ def create_app(
                 async for piece in resp.aiter_bytes():
                     collected.extend(piece)
         except httpx.ConnectError as e:
+            if finalize:
+                finalize(502)
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
+            if finalize:
+                finalize(504)
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        if finalize:
+            finalize(status)
 
         raw = bytes(collected)
         import os as _uos  # TEMP per-request upstream-usage diagnostic; not committed
@@ -1531,10 +1568,13 @@ def create_app(
         out.append("data: [DONE]\n\n")
         return "".join(out).encode("utf-8")
 
-    async def _stream_openai(url, headers, body, stubbed_tools):
+    async def _stream_openai(url, headers, body, stubbed_tools, finalize=None):
         """Pull the upstream stream into memory. With no virtual tool call present,
         hand the exact bytes to the client. Otherwise re-run non-streaming, resolve,
-        and rebuild the chunk stream from the finished completion."""
+        and rebuild the chunk stream from the finished completion.
+
+        `finalize(status)` folds this request into /stats once the upstream status
+        is known, so a failed stream isn't credited with savings (issue #19)."""
         collected = bytearray()
         status = 200
         try:
@@ -1544,9 +1584,15 @@ def create_app(
                 async for piece in resp.aiter_bytes():
                     collected.extend(piece)
         except httpx.ConnectError as e:
+            if finalize:
+                finalize(502)
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
+            if finalize:
+                finalize(504)
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        if finalize:
+            finalize(status)
 
         raw = bytes(collected)
         if not any(marker in raw for marker in _VIRTUAL_MARKERS):
@@ -1731,7 +1777,8 @@ def create_app(
                     final = resp
         return final
 
-    async def _stream_responses(url, headers, body, stubbed_tools, codex_read_bodies=None):
+    async def _stream_responses(url, headers, body, stubbed_tools, codex_read_bodies=None,
+                                finalize=None):
         """Buffer the upstream stream; replay verbatim unless the final response
         actually contains a virtual tool call (resolve non-streaming and rebuild the
         typed-event stream) or a codex shell edit we can reconcile against the real file.
@@ -1740,7 +1787,10 @@ def create_app(
         scan: the Responses object echoes the request `tools` (so an injected
         `expand_context`/`gateway_search_tools` name appears in the bytes even
         when nothing was called), which would send every request down the
-        rebuild path."""
+        rebuild path.
+
+        `finalize(status)` folds this request into /stats once the upstream status
+        is known, so a failed stream isn't credited with savings (issue #19)."""
         collected = bytearray()
         status = 200
         try:
@@ -1750,9 +1800,15 @@ def create_app(
                 async for piece in resp.aiter_bytes():
                     collected.extend(piece)
         except httpx.ConnectError as e:
+            if finalize:
+                finalize(502)
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
+            if finalize:
+                finalize(504)
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
+        if finalize:
+            finalize(status)
 
         raw = bytes(collected)
         final = _final_response_from_sse(raw)
