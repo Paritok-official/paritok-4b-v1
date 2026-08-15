@@ -87,7 +87,7 @@ def test_normal_input_is_untouched():
     """
     lines = [f"def f{i}(a, b):" if i % 8 == 0 else f"    total += compute({i}, a, b)"
              for i in range(600)]
-    assert max(count_tokens(l) for l in lines) < CHUNK_SIZE
+    assert max(count_tokens(ln) for ln in lines) < CHUNK_SIZE
 
     expected: list[list[str]] = []
     cur: list[str] = []

@@ -1,6 +1,6 @@
 """Paritok: Open-source agent context compression via local model."""
 
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 
 from paritok.config import ParitokConfig
 from paritok.middleware.wrapper import CompressionStats, ParitokClient, ParitokEngine
