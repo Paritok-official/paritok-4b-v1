@@ -367,6 +367,32 @@ resp = client.messages.create(
 print(resp._paritok_savings.saved_tokens, resp._paritok_savings.ratio)
 ```
 
+### Direct compression API (no agent)
+
+Just want compressed text — no agent, no proxy (e.g. a RAG / retrieval pipeline)? Call the hosted endpoint directly with your Paritok API key. Unlike the proxy it returns **clean compressed text with no `[REF:]` tag** — that tag belongs to the agentic expand/recall loop, which direct callers don't use — plus the token counts:
+
+```bash
+curl -sX POST https://www.paritok.com/api/compress \
+  -H "Authorization: Bearer pk_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+        "content": "…text to compress…",
+        "query": "what the compression should keep in view",
+        "upstream_model": "claude-sonnet-4"
+      }'
+```
+
+```json
+{
+  "compressed": "…clean compressed text, no [REF:]…",
+  "gpu_available": true,
+  "original_tokens": 2903,
+  "compressed_tokens": 88
+}
+```
+
+`query` is optional but recommended — it's the intent the compressor keeps (it drops what the intent doesn't name). If the GPU backend is unavailable it degrades safely: `gpu_available: false` and `compressed` echoes your original unchanged (nothing lost, just uncompressed).
+
 ---
 
 ## 🧩 When to use it
