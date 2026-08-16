@@ -19,7 +19,7 @@ from paritok.pipelines.compress import CompressionPipeline
 
 # Mirrors website compressResult.mjs IRRELEVANT_STUB — a real block compresses to
 # this when nothing in it is relevant to the current query.
-IRRELEVANT_STUB = "(omitted: no content in this block was relevant to the current task)"
+IRRELEVANT_STUB = "(irrelevant to the current task)"
 
 BLOCK = "\n".join(f"{i:>4}\tlog line {i}: nothing here is about the current task"
                   for i in range(120))
