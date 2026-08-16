@@ -427,6 +427,23 @@ def create_app(
     from paritok.proxy.adapters import responses as resp_adapter
     from paritok.token_counter import count_tokens
 
+    async def _read_json_body(request):
+        """Parse the request body as JSON, returning ``(body, None)`` on success or
+        ``(None, <400 response>)`` on a bad body.
+
+        An empty or malformed body used to raise ``json.JSONDecodeError`` straight
+        out of the handler and surface as an opaque HTTP 500 (issue #31) — the
+        natural thing to send when probing whether the proxy is up. Callers do
+        ``body, err = await _read_json_body(request); if err: return err``."""
+        raw = await request.body()
+        try:
+            return json.loads(raw), None
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+            return None, JSONResponse(
+                content={"error": "Request body must be non-empty, valid JSON."},
+                status_code=400,
+            )
+
     # Initialize
     config = ParitokConfig.load(config_path) if config_path else ParitokConfig()
     engine = ParitokEngine(config)
@@ -501,7 +518,9 @@ def create_app(
     # ── Anthropic handler ──
 
     async def handle_anthropic(request: Request) -> Response:
-        body = json.loads(await request.body())
+        body, _bad_body = await _read_json_body(request)
+        if _bad_body is not None:
+            return _bad_body
         parsed = anth_adapter.parse_request(body)
 
         import os as _reqos  # TEMP request-descriptor + passthrough diagnostics; not committed
@@ -638,7 +657,9 @@ def create_app(
     # ── OpenAI handler ──
 
     async def handle_openai(request: Request) -> Response:
-        body = json.loads(await request.body())
+        body, _bad_body = await _read_json_body(request)
+        if _bad_body is not None:
+            return _bad_body
         parsed = oai_adapter.parse_request(body)
 
         # OpenAI wraps tools in {"type": "function", "function": {...}}
@@ -741,7 +762,9 @@ def create_app(
     # ── OpenAI Responses API handler (Codex) ──
 
     async def handle_responses(request: Request) -> Response:
-        body = json.loads(await request.body())
+        body, _bad_body = await _read_json_body(request)
+        if _bad_body is not None:
+            return _bad_body
         parsed = resp_adapter.parse_request(body)
 
         query = resp_adapter.extract_query(parsed.input)
@@ -887,7 +910,9 @@ def create_app(
         extended window and stops compacting prematurely. Counting is local tiktoken (a few
         percent off for Claude, per the 'local is fine' choice) and never fails the meter:
         any compression error falls back to counting the raw payload."""
-        body = json.loads(await request.body())
+        body, _bad_body = await _read_json_body(request)
+        if _bad_body is not None:
+            return _bad_body
         model = body.get("model", "")
         try:
             parsed = anth_adapter.parse_request(body)
@@ -1941,6 +1966,20 @@ def run_proxy(
     print(f"  OpenAI:    set OPENAI_BASE_URL=http://{host}:{port}")
     print(f"  Stats:     http://{host}:{port}/stats")
     print(f"  Health:    http://{host}:{port}/health")
+
+    # Show the current history window so a plan-capped / small-context upstream is
+    # obvious at a glance: history compression only fires once a request exceeds
+    # context_threshold x context_window, so a default 200k window never triggers
+    # against, say, a 32k-capped provider until the user lowers it (issue #31).
+    from paritok.config import ParitokConfig
+    hist = (ParitokConfig.load(config_path) if config_path else ParitokConfig.load()).history
+    if hist.enabled:
+        trigger = int(hist.context_threshold * hist.context_window)
+        print(f"  History:   context_window = {hist.context_window:,} tokens "
+              f"(compresses stale turns above {trigger:,}). "
+              f"If your upstream's real limit is smaller, set history.context_window to it.")
+    else:
+        print("  History:   compression disabled (history.enabled: false).")
     print()
 
     uvicorn.run(app, host=host, port=port, log_level=log_level)
