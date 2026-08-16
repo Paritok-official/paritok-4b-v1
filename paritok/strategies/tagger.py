@@ -74,6 +74,19 @@ def classify_kind_from_content(content: str) -> str:
     # fall back to log_output for non-code multi-line blobs.
     if any(kw in head for kw in ("import ", "def ", "class ", "from ", "function ")):
         return "file_read"
+    # Shell/bash command output and structured logs. Their lines are long, so
+    # the "> 5 newlines in the first 200 chars" heuristic below never trips and
+    # they slip through to the file_read default — getting the code-tuned prompt
+    # instead of the broader "other" one (issue #21). Detect the unambiguous
+    # markers explicitly. Placed AFTER the code check so real source that merely
+    # contains a timestamp or a `$` is never pulled into log_output.
+    stripped = head.lstrip()
+    if stripped.startswith(("$ ", "$\t", ">>> ")):  # echoed shell / REPL prompt
+        return "log_output"
+    if re.search(r"(?m)^\s*\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}", head) or re.search(
+        r"\blevel=(?:trace|debug|info|warn|warning|error|fatal)\b", head, re.IGNORECASE
+    ):
+        return "log_output"
     if content[:200].count("\n") > 5:
         return "log_output"
     return "file_read"
