@@ -32,8 +32,9 @@ Compression only pays off when tools[] is large; on long msg-heavy sessions the
 win shifts to history/tool-output compression (a different pipe).
 """
 from __future__ import annotations
-import re
 import functools
+import os
+import re
 from typing import Iterable
 
 DEFAULT_K = 8
@@ -72,16 +73,47 @@ def _expand(query: str) -> str:
     return query or ""
 
 
+# bge-small-en-v1.5 as a quantized ONNX model, shipped in the wheel (paritok/data/
+# bge-small-onnx/) and run on CPU via fastembed/onnxruntime — no torch, no CUDA, and no
+# runtime model download. Same weights as the sentence-transformers build: validated to
+# give identical BFCL recall and 98% identical tool selection (tests/test_tool_select_bfcl.py).
+_BGE_ONNX_DIR = os.path.join(os.path.dirname(__file__), "data", "bge-small-onnx")
+
+
+class _OnnxEmbedder:
+    """Adapts fastembed's TextEmbedding to the ``.encode(texts, normalize_embeddings=True)``
+    interface the selector uses. fastembed already L2-normalizes bge output; we re-normalize
+    defensively so cosine == dot product regardless of backend."""
+
+    def __init__(self, model):
+        self._m = model
+
+    def encode(self, texts, normalize_embeddings: bool = True, **_):
+        import numpy as np
+        v = np.asarray(list(self._m.embed(list(texts))), dtype="float32")
+        if normalize_embeddings and v.size:
+            v = v / np.clip(np.linalg.norm(v, axis=1, keepdims=True), 1e-12, None)
+        return v
+
+
 @functools.lru_cache(maxsize=1)
 def _model():
+    # Primary: the bundled ONNX bge-small via fastembed (CPU-only, offline, no torch/CUDA).
+    try:
+        from fastembed import TextEmbedding
+        return _OnnxEmbedder(TextEmbedding(
+            model_name="BAAI/bge-small-en-v1.5", specific_model_path=_BGE_ONNX_DIR))
+    except ImportError:
+        pass
+    # Fallback: an existing sentence-transformers install still works (pulls no new torch).
     try:
         from sentence_transformers import SentenceTransformer
+        return SentenceTransformer("BAAI/bge-small-en-v1.5")
     except ImportError as e:
         raise RuntimeError(
             'Embedding tool-selection needs an optional dependency.\n'
             '  Install it with:  pip install "paritok[toolselect]"'
         ) from e
-    return SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 
 def _tool_name(t: dict) -> str:

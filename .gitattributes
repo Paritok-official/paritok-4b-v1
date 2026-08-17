@@ -2,3 +2,7 @@
 # On a Windows checkout autocrlf would rewrite LF→CRLF, corrupting the vocab and changing
 # its content hash (tiktoken would then reject the bundled file and try to hit the network).
 *.tiktoken binary
+
+# Bundled quantized ONNX embedding model (bge-small) + its tokenizer — binary; never apply
+# line-ending / text conversion (would corrupt the .onnx and change the tokenizer bytes).
+paritok/data/bge-small-onnx/** binary
