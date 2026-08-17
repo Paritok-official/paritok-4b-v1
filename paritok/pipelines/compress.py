@@ -24,11 +24,58 @@ from dataclasses import dataclass, field
 
 from paritok.config import ParitokConfig
 from paritok.storage import ShadowStorage, build_shadow_storage, content_hash
-from paritok.strategies.local_model import LocalModelStrategy
+from paritok.strategies.chunking import CHUNK_SIZE
+from paritok.strategies.local_model import (
+    LocalModelStrategy,
+    # num_ctx-reservation constants — imported (not duplicated) so the intent
+    # budget below stays in lockstep with local_model's own prompt sizing.
+    _CTX_SAFETY_MARGIN,
+    _MIN_NUM_PREDICT,
+    _TOKENIZER_SLACK,
+)
+from paritok.strategies.prompts import system_prompt_for_kind
 from paritok.strategies.tagger import classify_kind_from_content
-from paritok.token_counter import _DEFAULT_ENCODING, count_tokens
+from paritok.token_counter import _DEFAULT_ENCODING, _get_encoder, count_tokens
 
 logger = logging.getLogger(__name__)
+
+# --- Intent (query) context-budget guard ------------------------------------
+# The intent is injected into the system+user prompt of EVERY compression request,
+# right next to a content chunk (<= CHUNK_SIZE). Ollama rejects a request whose
+# prompt + num_predict exceeds the model's num_ctx window up-front (HTTP 400), so a
+# pathologically large query (e.g. a whole SWE-bench issue, ~7k tokens) makes the
+# backend 400 and the read pass through UNCOMPRESSED. Cap the intent so the request
+# always fits. The reservation mirrors local_model._call_ollama exactly.
+_INTENT_WRAPPER = (
+    "USER INTENT:\n\n\nCompress the following segment under the rules in your "
+    "system prompt. Output only the compressed [SEG]...[/SEG] block (or an empty "
+    "one to drop):\n\n[SEG id=s1 kind=file_read level=L1]\n\n[/SEG]\n"
+)
+_INTENT_WRAPPER_TOKENS = count_tokens(_INTENT_WRAPPER, _DEFAULT_ENCODING)
+
+
+def _intent_budget(system_tokens: int, content_tokens: int, num_ctx: int) -> int:
+    """Max intent (query) tokens, in cl100k, that keep system + intent + a content
+    chunk + a minimal generation under the model's num_ctx window.
+
+    The content in any single request is at most one chunk (<= CHUNK_SIZE), so we
+    reserve min(content, CHUNK_SIZE): a small read leaves more room for the intent.
+    Uses local_model's SLACK / CTX margin / MIN_NUM_PREDICT so both sides agree on
+    what fits. Never negative (0 = no room for any intent -> drop it entirely).
+    """
+    usable = int((num_ctx - _MIN_NUM_PREDICT - _CTX_SAFETY_MARGIN) / _TOKENIZER_SLACK)
+    reserve = system_tokens + min(content_tokens, CHUNK_SIZE) + _INTENT_WRAPPER_TOKENS
+    return max(usable - reserve, 0)
+
+
+def _truncate_intent(query: str, budget: int) -> tuple[str, int, bool]:
+    """Truncate `query` to `budget` cl100k tokens. Returns (possibly-truncated query,
+    original token count, was_truncated)."""
+    enc = _get_encoder(_DEFAULT_ENCODING)
+    toks = enc.encode(query)
+    if len(toks) <= budget:
+        return query, len(toks), False
+    return enc.decode(toks[:budget]), len(toks), True
 
 _REF_PATTERN = re.compile(r"^\[REF:[a-f0-9]+(?:\s+src=[^\]]*)?\]")
 
@@ -112,6 +159,13 @@ class CompressionPipeline:
             self._model = LocalModelStrategy(self.config.local_model)
         # Where per-compression traces go (None = disabled).
         self._trace_path = _resolve_trace_path(self.config)
+        # num_ctx the backend will run under (local Ollama or the hosted GPU server —
+        # both ship 8192), used to size the intent budget. Warn at most once per
+        # distinct oversized query so a big task doesn't spam every tool_result.
+        self._intent_num_ctx = getattr(
+            getattr(self.config, "local_model", None), "num_ctx", 8192
+        )
+        self._warned_intents: set[str] = set()
 
     def _debug_dump(self, record: dict) -> None:
         if not self._trace_path:
@@ -250,6 +304,12 @@ class CompressionPipeline:
         # actually sees), matching the local fallback.
         if kind is None:
             kind = classify_kind_from_content(model_text)
+        # Cap the intent so system + intent + content chunk always fit num_ctx. A huge
+        # query otherwise overflows the window and the backend 400s -> uncompressed
+        # passthrough. Trims only the compressor's keep/drop guidance, never the real
+        # request to the LLM.
+        if query:
+            query = self._cap_intent(query, model_text, kind)
         try:
             compressed = self._model.compress(
                 model_text,
@@ -315,6 +375,27 @@ class CompressionPipeline:
             shadow_id=sid,
             metadata={"cache_hit": False},
         )
+
+    def _cap_intent(self, query: str, content_text: str, kind: str) -> str:
+        """Truncate the intent (query) to the budget that keeps this request under
+        num_ctx (see `_intent_budget`), warning once per distinct oversized query."""
+        system_tokens = count_tokens(system_prompt_for_kind(kind), _DEFAULT_ENCODING)
+        content_tokens = count_tokens(content_text, _DEFAULT_ENCODING)
+        budget = _intent_budget(system_tokens, content_tokens, self._intent_num_ctx)
+        capped, original_len, truncated = _truncate_intent(query, budget)
+        if truncated:
+            key = content_hash(query)
+            if key not in self._warned_intents:
+                self._warned_intents.add(key)
+                logger.warning(
+                    "paritok: intent/query is %d tokens, over the %d-token max intent "
+                    "budget for this request (model context %d); truncating the intent "
+                    "to %d tokens — the tail is dropped. This only trims the keep/drop "
+                    "guidance sent to the compressor; the request to the LLM is "
+                    "unaffected.",
+                    original_len, budget, self._intent_num_ctx, budget,
+                )
+        return capped
 
     def _skip(self, content: str, original_tokens: int, reason: str) -> CompressionResult:
         self._debug_dump({

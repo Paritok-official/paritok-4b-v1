@@ -433,6 +433,8 @@ Real end-to-end evaluation. An agent scaffold receives its context through each 
 
 > **The benchmark is a floor, not a ceiling.** The 86.5% measures the **raw 4B model** with **no recall enabled** — compressed output fed straight to the agent. What you actually deploy is the gateway: every segment is tagged `[REF:id]` and the agent can call `read_original` to pull back the exact bytes at any time. Nothing is permanently discarded, so real-world deployment recovers quality the raw benchmark leaves on the table. We publish the raw-model number because it's the honest, reproducible floor.
 
+To reproduce these SWE-bench Lite numbers yourself, see the [`eval_model/`](eval_model/) folder — one command runs it end to end (pull from source → compress → score).
+
 ### How Paritok compares
 
 |                                                | **Paritok-4B-v1** | LLMLingua-2  | gpt-4.1-mini prompt |
