@@ -1,0 +1,4 @@
+# tiktoken BPE vocab files are binary data — never apply line-ending / text conversion.
+# On a Windows checkout autocrlf would rewrite LF→CRLF, corrupting the vocab and changing
+# its content hash (tiktoken would then reject the bundled file and try to hit the network).
+*.tiktoken binary
