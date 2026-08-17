@@ -25,6 +25,7 @@ from paritok.config import ParitokConfig
 from paritok.pipelines.compress import CompressionPipeline
 from paritok.pipelines.virtual import (
     EXPAND_CONTEXT_SCHEMA,
+    EXPAND_TOOL_ALIASES,
     GATEWAY_SEARCH_TOOLS_SCHEMA,
     is_expand_call,
     is_virtual_tool_call,
@@ -649,7 +650,11 @@ def _inject_virtual_tools(
 ) -> list[dict]:
     names = {t.get("name") for t in tools}
     result = list(tools)
-    if has_compressed and "expand_context" not in names:
+    # The expand tool's schema NAME is "read_original" (EXPAND_TOOL_NAME), not the abstract
+    # "expand_context" — so dedup on the alias set, else a second injection (the OpenAI path
+    # re-injects after tool compression) appends read_original twice. Anthropic/OpenAI tolerate
+    # duplicate tool names; Gemini's OpenAI-compat 400s ("Duplicate function declaration").
+    if has_compressed and not (names & EXPAND_TOOL_ALIASES):
         result.append(EXPAND_CONTEXT_SCHEMA)
     if has_filtered and "gateway_search_tools" not in names:
         result.append(GATEWAY_SEARCH_TOOLS_SCHEMA)

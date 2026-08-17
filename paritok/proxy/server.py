@@ -224,6 +224,72 @@ def _extract_tool_text(content):
     return None, None
 
 
+def _is_gemini_openai_upstream(base_url: str, model: str) -> bool:
+    """Gemini's OpenAI-compat endpoint requires a thought_signature on every assistant
+    tool_call it processes; no other provider does. Detect it so the synthetic-tool-call
+    reshape below fires ONLY there (a no-op everywhere else)."""
+    b = (base_url or "").lower()
+    m = (model or "").lower()
+    return ("generativelanguage.googleapis.com" in b
+            or "/v1beta/openai" in b
+            or m.startswith("gemini") or m.startswith("google/gemini"))
+
+
+def _assistant_tool_call_is_signed(msg: dict) -> bool:
+    """True if an assistant message's tool_calls carry a Gemini thought_signature (at the
+    message level or on a tool_call) — i.e. Gemini itself produced them, so they must pass
+    through untouched. An UNSIGNED tool_call is a client-synthesised bootstrap call, which
+    is exactly what Gemini 400s on."""
+    def _sig(d: dict) -> bool:
+        ec = (d or {}).get("extra_content") or {}
+        google = ec.get("google") if isinstance(ec.get("google"), dict) else ec
+        return bool(isinstance(google, dict) and google.get("thought_signature"))
+    if _sig(msg):
+        return True
+    return any(_sig(tc) for tc in (msg.get("tool_calls") or []))
+
+
+def _degemini_synthetic_tool_calls(messages: list[dict]) -> tuple[list[dict], int]:
+    """Fold UNSIGNED (client-synthesised) assistant tool_calls and their ``role="tool"``
+    results into plain ``role="user"`` messages, so Gemini's OpenAI-compat endpoint stops
+    rejecting the history with "Function call is missing a thought_signature" (#22).
+
+    Real, Gemini-signed tool_calls are left untouched. This runs AFTER Paritok has already
+    compressed the ``role="tool"`` bodies, so the folded text is the COMPRESSED content —
+    the token savings survive (unlike a client that drops the raw dump into a user message
+    before compression, which loses them). Returns ``(new_messages, n_folded)``; a no-op
+    returning the input unchanged when there is no unsigned tool_call to fold."""
+    fold: dict[str, str] = {}          # tool_call_id -> function name, for pairs we fold
+    stage: list[dict] = []
+    for msg in messages:
+        if (isinstance(msg, dict) and msg.get("role") == "assistant"
+                and msg.get("tool_calls") and not _assistant_tool_call_is_signed(msg)):
+            for tc in msg["tool_calls"]:
+                cid = tc.get("id")
+                if cid:
+                    fold[cid] = ((tc.get("function") or {}).get("name")
+                                 or tc.get("name") or "tool")
+            text = msg.get("content")
+            if isinstance(text, str) and text.strip():
+                stage.append({"role": "assistant", "content": text})  # keep text, drop calls
+            continue                                                   # else drop the message
+        stage.append(msg)
+    if not fold:
+        return messages, 0
+    out: list[dict] = []
+    n = 0
+    for msg in stage:
+        if (isinstance(msg, dict) and msg.get("role") == "tool"
+                and msg.get("tool_call_id") in fold):
+            text, _rewrap = _extract_tool_text(msg.get("content", ""))
+            out.append({"role": "user",
+                        "content": f"[Tool result — {fold[msg['tool_call_id']]}]\n{text or ''}"})
+            n += 1
+        else:
+            out.append(msg)
+    return out, n
+
+
 def _pick_responses_upstream(authorization: str, openai_base_url: str) -> str:
     """Choose the upstream for a Codex `/v1/responses` request by auth type.
 
@@ -738,6 +804,19 @@ def create_app(
         # Anthropic path), so Codex / any OpenAI Chat Completions client never owns it.
         if processed_tools and any(is_expand_call(t.get("name", "")) for t in processed_tools):
             parsed.messages = _prepend_ref_guidance_openai(parsed.messages)
+
+        # Gemini's OpenAI-compat endpoint 400s on assistant tool_calls it didn't itself
+        # sign ("missing a thought_signature"), which breaks the synthetic-bootstrap tool
+        # history agents use to hand Paritok a role="tool" result to compress on turn 1
+        # (#22). Fold those unsigned pairs into user messages so Gemini accepts them. Runs
+        # AFTER the role="tool" compression above, so the folded text is already the
+        # compressed body — the savings survive. Real signed calls (and non-Gemini
+        # upstreams) are untouched.
+        if _is_gemini_openai_upstream(openai_base_url, model):
+            parsed.messages, _n_gem = _degemini_synthetic_tool_calls(parsed.messages)
+            if _n_gem:
+                logger.info("gemini: folded %d unsigned tool-call result(s) into user "
+                            "messages to satisfy thought_signature (#22)", _n_gem)
 
         # Forward
         headers = _forward_headers(request)
