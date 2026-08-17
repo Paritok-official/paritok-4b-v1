@@ -42,10 +42,13 @@ def _wsl_python() -> str | None:
             r = subprocess.run(["wsl", "bash", "-lc", f"{py} -c 'import swebench.harness.run_evaluation'"],
                                capture_output=True, timeout=120)
         except Exception:
-            _WSL_PY.append(None); return None
+            _WSL_PY.append(None)
+            return None
         if r.returncode == 0:
-            _WSL_PY.append(py); return py
-    _WSL_PY.append(None); return None
+            _WSL_PY.append(py)
+            return py
+    _WSL_PY.append(None)
+    return None
 
 
 def available() -> tuple[bool, str]:

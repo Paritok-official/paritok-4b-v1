@@ -22,30 +22,37 @@ def recount(patch: str) -> str:
     while i < n:
         m = _HUNK.match(lines[i])
         if not m:
-            out.append(lines[i]); i += 1; continue
+            out.append(lines[i])
+            i += 1
+            continue
         old_start, _oc, new_start, _nc, tail = m.groups()
         body, j = [], i + 1
         while j < n:
             bl = lines[j]
             if bl.startswith('@@ ') or bl.startswith('--- ') or bl.startswith('diff --git') or bl.startswith('Index: '):
                 break
-            body.append(bl); j += 1
+            body.append(bl)
+            j += 1
         old_c = new_c = 0
         fixed = []
         for bl in body:
             if bl.startswith('\\'):        # "\ No newline at end of file"
-                fixed.append(bl); continue
+                fixed.append(bl)
+                continue
             if bl == '':                   # blank context line missing its space
                 bl = ' '
             c = bl[0]
             if c == ' ':
-                old_c += 1; new_c += 1
+                old_c += 1
+                new_c += 1
             elif c == '-':
                 old_c += 1
             elif c == '+':
                 new_c += 1
             else:                          # stray line -> treat as context
-                bl = ' ' + bl; old_c += 1; new_c += 1
+                bl = ' ' + bl
+                old_c += 1
+                new_c += 1
             fixed.append(bl)
         out.append(f'@@ -{old_start},{old_c} +{new_start},{new_c} @@{tail}')
         out.extend(fixed)

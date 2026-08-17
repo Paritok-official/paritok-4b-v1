@@ -89,7 +89,8 @@ def main() -> None:
     if os.path.exists(cache_path):
         for line in open(cache_path, encoding="utf-8"):
             if line.strip():
-                r = json.loads(line); done[r["instance_id"]] = r
+                r = json.loads(line)
+                done[r["instance_id"]] = r
         _p(f"[1/5] resuming: {len(done)} instances already prepared in {cache_path}")
 
     _p(f"[1-2/5] preparing + compressing up to {args.n} instances "
@@ -104,7 +105,8 @@ def main() -> None:
             k += 1
             iid = rec["instance_id"]
             if iid in done:
-                records.append(done[iid]); continue
+                records.append(done[iid])
+                continue
             # Feed the model line-numbered source in --line-numbers mode (its
             # in-distribution form); the raw full_context still drives everything else.
             comp_input = (line_number_context(rec["full_context"])
@@ -114,7 +116,8 @@ def main() -> None:
                 chunk=args.chunk, ollama_url=args.ollama_url, model=args.compress_model,
                 stats=cstats,
             )
-            cf.write(json.dumps(rec, ensure_ascii=False) + "\n"); cf.flush()
+            cf.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            cf.flush()
             records.append(rec)
             if k % 10 == 0:
                 _p(f"      prepared {k} (compressed {k - len(done)} new)")
