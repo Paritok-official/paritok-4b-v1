@@ -19,12 +19,13 @@ Usage (proxy mode — primary, recommended):
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from paritok.config import ParitokConfig
 from paritok.pipelines.compress import CompressionPipeline
 from paritok.pipelines.virtual import (
     EXPAND_CONTEXT_SCHEMA,
+    EXPAND_TOOL_ALIASES,
     GATEWAY_SEARCH_TOOLS_SCHEMA,
     is_expand_call,
     is_virtual_tool_call,
@@ -45,6 +46,32 @@ class CompressionStats:
     tools_original: int = 0
     tools_kept: int = 0
     history_turns_compressed: int = 0
+    # A few real original→compressed pairs from this request, for the /stats
+    # dashboard's before/after view (issue #42). Kept small; ProxyStats picks the
+    # biggest-saving one per request and truncates it before storing.
+    samples: list = field(default_factory=list)
+    # Tool-schema filter before/after — all offered tool names → the names actually
+    # forwarded (kept + injected virtual tools) — for the same dashboard view (#42).
+    # Set only when discovery actually dropped tools. ProxyStats pairs it with the
+    # request's real tool-schema token counts.
+    tool_filter_sample: dict | None = None
+
+    def add_sample(self, original: str, cr, source: str | None = None) -> None:
+        """Record one original→compressed pair — only genuine compressions (not a
+        skip) that actually saved tokens, capped in count so a request never holds
+        more than a handful. The text is kept full here (it's already in memory for
+        this request); ProxyStats truncates it when it folds the pick into /stats."""
+        if len(self.samples) >= 4:
+            return
+        if cr.metadata.get("skipped") or cr.saved_tokens <= 0:
+            return
+        self.samples.append({
+            "source": source or "content",
+            "original": original,
+            "compressed": cr.compressed,
+            "original_tokens": cr.original_tokens,
+            "compressed_tokens": cr.compressed_tokens,
+        })
 
     @property
     def saved_tokens(self) -> int:
@@ -59,6 +86,13 @@ class CompressionStats:
     @property
     def tools_filtered(self) -> int:
         return self.tools_original - self.tools_kept
+
+
+def _tool_name(t: dict) -> str:
+    """A tool's name across Anthropic ({name}) and OpenAI ({function:{name}}) shapes."""
+    if not isinstance(t, dict):
+        return "?"
+    return t.get("name") or (t.get("function") or {}).get("name") or "?"
 
 
 # ── Core Engine (shared between SDK and proxy) ──
@@ -110,6 +144,9 @@ class ParitokEngine:
         query = query if query is not None else _extract_query(messages)
         session_id = _conversation_id(messages)
         stubbed_tools: list[dict] = []
+        # All tool names the caller offered, captured before discovery reassigns `tools`
+        # (for the /stats tool-schema before/after sample, #42).
+        offered_tool_names = [_tool_name(t) for t in tools] if tools else []
 
         # 1. Tool Discovery — filter tool schemas
         if tools and query and len(tools) > self.config.tool_discovery.top_k:
@@ -150,6 +187,15 @@ class ParitokEngine:
                 has_compressed=True,
                 has_filtered=stats.tools_kept < stats.tools_original,
             )
+
+        # Record the tool-schema before/after (offered names → forwarded names, the
+        # latter including injected virtual tools) only when discovery actually
+        # dropped tools this turn — ProxyStats pairs it with the real token counts.
+        if tools is not None and stats.tools_kept < stats.tools_original:
+            stats.tool_filter_sample = {
+                "original_names": offered_tool_names,
+                "forwarded_names": [_tool_name(t) for t in tools],
+            }
 
         return messages, tools, stats, stubbed_tools
 
@@ -434,6 +480,7 @@ def _compress_block(
             stats.items_compressed += 1
         if cr.metadata.get("cache_hit") or cr.metadata.get("path_shortcircuit"):
             stats.cache_hits += 1
+        stats.add_sample(content, cr, source)
         return {**block, "content": cr.compressed}
 
     if isinstance(content, list):
@@ -452,6 +499,7 @@ def _compress_block(
                         stats.items_compressed += 1
                     if cr.metadata.get("cache_hit") or cr.metadata.get("path_shortcircuit"):
                         stats.cache_hits += 1
+                    stats.add_sample(text, cr, source)
                     new_content.append({**item, "text": cr.compressed})
                 else:
                     new_content.append(item)
@@ -649,7 +697,11 @@ def _inject_virtual_tools(
 ) -> list[dict]:
     names = {t.get("name") for t in tools}
     result = list(tools)
-    if has_compressed and "expand_context" not in names:
+    # The expand tool's schema NAME is "read_original" (EXPAND_TOOL_NAME), not the abstract
+    # "expand_context" — so dedup on the alias set, else a second injection (the OpenAI path
+    # re-injects after tool compression) appends read_original twice. Anthropic/OpenAI tolerate
+    # duplicate tool names; Gemini's OpenAI-compat 400s ("Duplicate function declaration").
+    if has_compressed and not (names & EXPAND_TOOL_ALIASES):
         result.append(EXPAND_CONTEXT_SCHEMA)
     if has_filtered and "gateway_search_tools" not in names:
         result.append(GATEWAY_SEARCH_TOOLS_SCHEMA)

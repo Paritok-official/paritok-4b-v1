@@ -36,6 +36,7 @@
 
 ## 📢 News
 
+- **2026-08-17** &nbsp; **v1.3.8** — a visual `/stats` dashboard (live token savings + per-request original→compressed before/after, in place of the raw JSON) and the new [Paritok VS Code extension](https://github.com/Paritok-official/paritok-vscode).
 - **2026-07-31** &nbsp; **v1.3.0** — stability release: edit-recovery, `read_original` API rename (from `expand_context`).
 - **2026-07-19** &nbsp; **v1.2.0** ships the embedding-based tool filter — the biggest single-turn lever (~29K → ~8K on a typical Claude Code turn), unlocking prompt-cache-friendly tool selection with `gateway_search_tools` recall.
 - **2026-07-15** &nbsp; **Paritok gateway v1.0.0** open-sourced — the proxy/middleware that turns the 4B model into a drop-in Claude Code / Cursor / Codex compression layer.

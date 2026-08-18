@@ -342,7 +342,17 @@ class CompressionPipeline:
         compressed_tokens = count_tokens(compressed, enc)
         savings_ratio = 1 - compressed_tokens / original_tokens if original_tokens > 0 else 0
         if savings_ratio < cfg.refusal_threshold:
-            return self._skip(content, original_tokens, "below_refusal_threshold")
+            # A backend that echoes the input VERBATIM is a passthrough, not a weak
+            # compression (a real compression always reflows / drops something). For the
+            # hosted GPU that means the worker was unavailable or throttled — it returns
+            # the original on gpu_available:false (#30). Record that as the reason instead
+            # of "below_refusal_threshold", which reads like the content "didn't compress"
+            # and sends debuggers to tune a threshold that has nothing to do with it.
+            if compressed == model_text:
+                reason = "gpu_unavailable" if self.config.use_gpu_server else "backend_passthrough"
+            else:
+                reason = "below_refusal_threshold"
+            return self._skip(content, original_tokens, reason)
 
         # 7. Store original + cache tagged result
         # [REF:sid src=...] tag adds ~5–15 tokens overhead to compressed_tokens

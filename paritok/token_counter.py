@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import shutil
+import tempfile
+
 import tiktoken
 
-_encoder_cache: dict[str, tiktoken.Encoding] = {}
+_encoder_cache: dict = {}
 
 _DEFAULT_ENCODING = "cl100k_base"
 
@@ -68,13 +73,66 @@ except Exception:  # pragma: no cover - very old tiktoken without the helper
     _KNOWN_ENCODINGS = {"cl100k_base", "o200k_base", "p50k_base", "r50k_base", "gpt2"}
 
 
-def _get_encoder(encoding: str = _DEFAULT_ENCODING) -> tiktoken.Encoding:
+# Ship the vocabs for BOTH encodings our model map uses — cl100k_base (gpt-4/3.5, and our
+# Claude approximation) and o200k_base (gpt-4o and everything OpenAI has shipped since) —
+# so both work fully offline. tiktoken otherwise fetches them from
+# openaipublic.blob.core.windows.net on first use, which throws on a locked-down / CI /
+# corporate-proxy box (#23); count_tokens runs on every compression request, so that would
+# take down the hot path.
+_BLOB = "https://openaipublic.blob.core.windows.net/encodings/{}.tiktoken"
+_BUNDLED_ENCODINGS = ("cl100k_base", "o200k_base")
+_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+
+def _bundled_vocab_path(encoding: str) -> str:
+    return os.path.join(_DATA_DIR, f"{encoding}.tiktoken")
+
+
+def _seed_tiktoken_cache() -> None:
+    """Copy the bundled vocabs into tiktoken's cache (under the exact hash filenames it
+    looks for) so ``get_encoding`` never needs the network for our encodings. Best-effort:
+    if the cache dir isn't writable, _get_encoder still falls back to an estimate."""
+    try:
+        cache_dir = (os.environ.get("TIKTOKEN_CACHE_DIR")
+                     or os.environ.get("DATA_GYM_CACHE_DIR")
+                     or os.path.join(tempfile.gettempdir(), "data-gym-cache"))
+        for name in _BUNDLED_ENCODINGS:
+            src = _bundled_vocab_path(name)
+            dst = os.path.join(cache_dir, hashlib.sha1(_BLOB.format(name).encode()).hexdigest())
+            if os.path.exists(dst) or not os.path.exists(src):
+                continue
+            os.makedirs(cache_dir, exist_ok=True)
+            shutil.copyfile(src, dst)
+    except Exception:
+        pass
+
+
+class _EstimateEncoder:
+    """Offline last resort when the real BPE can't be loaded (blocked vocab host AND a
+    non-bundled encoding). ``encode`` returns 4-char chunks, so ``len(encode(text))``
+    approximates the token count (~4 chars/token) AND ``decode(encode(text)[:k])`` yields
+    a valid char-budget truncation — the two ways token counting uses an encoder."""
+
+    def encode(self, text: str, *args, **kwargs) -> list:
+        return [text[i:i + 4] for i in range(0, len(text), 4)]
+
+    def decode(self, tokens, *args, **kwargs) -> str:
+        return "".join(tokens)
+
+
+def _get_encoder(encoding: str = _DEFAULT_ENCODING):
     if encoding not in _encoder_cache:
+        _seed_tiktoken_cache()
         try:
             _encoder_cache[encoding] = tiktoken.get_encoding(encoding)
-        except (ValueError, KeyError):
-            # Last-resort guard: an unresolved name must never crash token counting.
-            _encoder_cache[encoding] = tiktoken.get_encoding(_DEFAULT_ENCODING)
+        except Exception:
+            # Network/IO (unreachable vocab host) OR an unknown name must NEVER crash token
+            # counting — it's on every compression request (#23). Fall back to the bundled
+            # default (offline-exact); if even that fails, a tokenizer-free ~len/4 estimate.
+            if encoding != _DEFAULT_ENCODING:
+                _encoder_cache[encoding] = _get_encoder(_DEFAULT_ENCODING)
+            else:
+                _encoder_cache[encoding] = _EstimateEncoder()
     return _encoder_cache[encoding]
 
 
