@@ -224,6 +224,19 @@ def _extract_tool_text(content):
     return None, None
 
 
+# Headers we never forward on the proxy->upstream hop. `accept-encoding` is stripped so
+# httpx negotiates its OWN transfer encoding: forwarding the client's value (Claude Code
+# sends "gzip, deflate, br, zstd") made upstream answer in br/zstd, which httpx can't decode
+# unless brotli/zstandard are installed — the [proxy] extra ships neither — so resp.json()
+# raised and every such request 502'd as "Upstream returned invalid JSON" (#28). The proxy
+# always re-serialises the response, so the upstream's transfer encoding is irrelevant to us.
+_HOP_BY_HOP_STRIP = ("host", "content-length", "accept-encoding")
+
+
+def _forward_header_dict(items) -> dict[str, str]:
+    return {k: v for k, v in items if k.lower() not in _HOP_BY_HOP_STRIP}
+
+
 def _is_gemini_openai_upstream(base_url: str, model: str) -> bool:
     """Gemini's OpenAI-compat endpoint requires a thought_signature on every assistant
     tool_call it processes; no other provider does. Detect it so the synthetic-tool-call
@@ -1019,7 +1032,7 @@ def create_app(
     # ── Helpers ──
 
     def _forward_headers(request: Request) -> dict[str, str]:
-        return {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+        return _forward_header_dict(request.headers.items())
 
     async def _forward_json(
         client: httpx.AsyncClient, url: str, headers: dict, body: dict,
