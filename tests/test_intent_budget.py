@@ -20,7 +20,9 @@ from paritok.strategies.local_model import (
 from paritok.strategies.prompts import system_prompt_for_kind
 from paritok.token_counter import count_tokens
 
-CONTENT = "\n".join(f"{i:>4}\tdef f_{i}(): return {i}" for i in range(200))
+# Bare "N\t" line numbers (the shape the compressor de-pads to); the intent-budget
+# math here is independent of the line-number format.
+CONTENT = "\n".join(f"{i}\tdef f_{i}(): return {i}" for i in range(200))
 
 
 class _RecordingModel:

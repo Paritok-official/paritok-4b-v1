@@ -92,6 +92,21 @@ def _normalize_for_match(text: str) -> str:
     return _LINE_NUMBER_PREFIX.sub("", text).strip()
 
 
+# cat -n / some Read tools pad the line number to a fixed width ("     123\tcode").
+# The 4B was tuned on the BARE "123\t" shape (the form the proxy also synthesizes for
+# codex, see server._ensure_line_numbers); the width-padded form is out-of-distribution
+# and the model compresses it markedly worse (measured: ~0.24 kept bare vs ~0.35 padded
+# on the same file). We strip the padding for the MODEL INPUT only.
+_PADDED_LINE_NUMBER = re.compile(r"^[ \t]+(\d+\t)", re.MULTILINE)
+
+
+def _depad_line_numbers(text: str) -> str:
+    """Normalize width-padded Read line-number prefixes ("     123\\t") to the bare
+    "123\\t" the compression model was trained on. A no-op on already-bare or
+    unnumbered text — only the leading whitespace before a `<digits>\\t` is removed."""
+    return _PADDED_LINE_NUMBER.sub(r"\1", text)
+
+
 def _sanitize_source(source: str) -> str:
     """Make a path safe to embed inside a [REF:id src=...] tag."""
     # ']' would break the tag; newlines would break line parsing. Replace.
@@ -298,6 +313,10 @@ class CompressionPipeline:
         # 5. Call model (SEG protocol: intent + kind + level). Feed model_input when
         # given (e.g. line-numbered form) — content still governs everything else.
         model_text = model_input if model_input is not None else content
+        # De-pad width-padded Read line numbers ("     123\t" -> "123\t") for the model
+        # only: the 4B compresses the bare form much better, and content (token count /
+        # shadow store / expand_context) keeps the exact bytes the agent sent.
+        model_text = _depad_line_numbers(model_text)
         # Classify kind centrally so every backend receives a real kind. Without
         # this only LocalModelStrategy sniffs it internally; GpuServerStrategy would
         # forward kind=None to the server. Classify on model_text (what the model
@@ -338,9 +357,13 @@ class CompressionPipeline:
         if content.strip() and not (isinstance(compressed, str) and compressed.strip()):
             return self._skip(content, original_tokens, "empty_compression")
 
-        # 6. Effectiveness check
+        # 6. Effectiveness check — judged against what the MODEL actually saw
+        # (`model_text`, already de-padded), NOT the padded original. Otherwise merely
+        # stripping line-number padding would register as savings and let an echo /
+        # passthrough slip past the refusal gate as if it were a real compression.
         compressed_tokens = count_tokens(compressed, enc)
-        savings_ratio = 1 - compressed_tokens / original_tokens if original_tokens > 0 else 0
+        model_tokens = count_tokens(model_text, enc)
+        savings_ratio = 1 - compressed_tokens / model_tokens if model_tokens > 0 else 0
         if savings_ratio < cfg.refusal_threshold:
             # A backend that echoes the input VERBATIM is a passthrough, not a weak
             # compression (a real compression always reflows / drops something). For the
