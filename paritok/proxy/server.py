@@ -22,7 +22,22 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from paritok.proxy.stats_dashboard import STATS_DASHBOARD_HTML
+
 logger = logging.getLogger("paritok.proxy")
+
+# How many recent original→compressed pairs /stats keeps for the dashboard's
+# before/after view, and the per-side character cap so the payload stays small.
+_MAX_STATS_SAMPLES = 6
+_STATS_SAMPLE_CHARS = 1400
+
+
+def _clip(text: str, n: int = _STATS_SAMPLE_CHARS) -> str:
+    """Truncate a sample's text to n chars, marking how much was dropped."""
+    text = text or ""
+    if len(text) <= n:
+        return text
+    return text[:n] + f"\n… (+{len(text) - n:,} more chars)"
 
 
 @dataclass
@@ -43,6 +58,9 @@ class ProxyStats:
     # without paritok; `comp` = what we actually forward. Everything paritok
     # can't affect (system prompt, model output, ...) is deliberately excluded.
     by_model: dict = field(default_factory=dict)
+    # A rolling window of recent original→compressed pairs (biggest saving from
+    # each request), truncated, for the /stats dashboard's before/after view (#42).
+    recent_samples: list = field(default_factory=list)
     start_time: float = field(default_factory=time.time)
 
     @staticmethod
@@ -83,6 +101,79 @@ class ProxyStats:
             slot = "first" if bucket["tools_first_orig"] == 0 else "rest"
             bucket[f"tools_{slot}_orig"] += tools_original_tokens
             bucket[f"tools_{slot}_comp"] += tools_compressed_tokens
+        # Fold this request's before/after pairs into the dashboard window: the
+        # tool-schema filter first, then content, so the content pair reads as the
+        # newer of the two (#42). The tool sample is priced with the request's real
+        # tool-schema token counts and only shown when filtering actually saved.
+        tfs = getattr(stats, "tool_filter_sample", None)
+        if tfs and tools_original_tokens > tools_compressed_tokens:
+            self._fold_tool_sample(tfs, model, tools_original_tokens, tools_compressed_tokens)
+        self._fold_samples(getattr(stats, "samples", None) or [], model)
+
+    @staticmethod
+    def _sample_entry(source: str, model: str, original: str, compressed: str,
+                      orig_tok: int, comp_tok: int) -> dict:
+        """One dashboard before/after row: text truncated, token counts exact."""
+        original, compressed = original or "", compressed or ""
+        return {
+            "source": source or "content",
+            "model": model or "",
+            "original": _clip(original),
+            "compressed": _clip(compressed),
+            "original_chars": len(original),
+            "compressed_chars": len(compressed),
+            "original_tokens": orig_tok,
+            "compressed_tokens": comp_tok,
+            "tokens_saved": orig_tok - comp_tok,
+            "kept_ratio": round(comp_tok / orig_tok, 3) if orig_tok else 0.0,
+        }
+
+    def _push_sample(self, entry: dict) -> None:
+        self.recent_samples.append(entry)
+        if len(self.recent_samples) > _MAX_STATS_SAMPLES:
+            del self.recent_samples[:-_MAX_STATS_SAMPLES]
+
+    def _fold_samples(self, samples: list, model: str) -> None:
+        """Keep the biggest-saving CONTENT original→compressed pair (tool results /
+        file reads / history) from this request in the rolling window."""
+        if not samples:
+            return
+        best = max(samples, key=lambda s: s["original_tokens"] - s["compressed_tokens"])
+        self._push_sample(self._sample_entry(
+            best.get("source") or "content", model,
+            best["original"], best["compressed"],
+            best["original_tokens"], best["compressed_tokens"]))
+
+    def _fold_tool_sample(self, tfs: dict, model: str, orig_tok: int, comp_tok: int) -> None:
+        """Fold the TOOL-SCHEMA filter before/after (offered tool names → forwarded
+        names, the latter including injected virtual tools) as its own dashboard
+        row, priced with the request's real tool-schema token counts."""
+        offered = tfs.get("original_names") or []
+        forwarded = tfs.get("forwarded_names") or []
+        offered_set = set(offered)
+        kept = [n for n in forwarded if n in offered_set]
+        virtual = [n for n in forwarded if n not in offered_set]
+        dropped = len(offered) - len(kept)
+        original = (f"# {len(offered)} tool schemas offered by the client\n"
+                    + ", ".join(offered))
+        vsuffix = f" + {len(virtual)} virtual ({', '.join(virtual)})" if virtual else ""
+        compressed = (f"# {len(kept)} kept{vsuffix}, {dropped} stubbed "
+                      f"(restorable on demand via read_original)\n"
+                      + ", ".join(forwarded))
+        self._push_sample(self._sample_entry(
+            "tool schemas", model, original, compressed, orig_tok, comp_tok))
+
+    def samples_page(self, index: int) -> dict:
+        """One recent original→compressed pair, for the local dashboard's paged
+        before/after view (#42, one pair per page). index 0 = newest; an
+        out-of-range index clamps to the nearest valid page. Empty window →
+        sample is None. Always returns the running total so a caller can page."""
+        total = len(self.recent_samples)
+        if total == 0:
+            return {"sample_index": 0, "samples_total": 0, "sample": None}
+        i = max(0, min(index, total - 1))
+        return {"sample_index": i, "samples_total": total,
+                "sample": self.recent_samples[total - 1 - i]}
 
     def record_expansion(self, expanded_tokens: int, model: str = "") -> None:
         """Fold a served expand_context back onto the compressed side.
@@ -145,6 +236,7 @@ class ProxyStats:
             t_comp += b["tools_first_comp"] + b["tools_rest_comp"]
         return {
             "total_requests": self.requests_processed,
+            "uptime_seconds": round(time.time() - self.start_time),
             "input_tokens_original": orig,
             "input_tokens_compressed": comp,
             "compression_ratio": round(comp / orig, 3) if orig else 0.0,
@@ -157,6 +249,11 @@ class ProxyStats:
             "expansions": self.total_expansions,
             "edits_recovered": self.total_edits_recovered,
             "estimated_cost_saved_usd": f"${self.estimated_cost_saved_usd:.2f}",
+            # How many recent original→compressed pairs are available; each is
+            # fetched one at a time via GET /stats?sample=N (#42). Local-only by
+            # design — the pairs hold real file content / tool schemas, so they stay
+            # on this box (the hosted account dashboard only sees metered totals).
+            "compression_samples_count": len(self.recent_samples),
         }
 
 
@@ -481,7 +578,7 @@ def create_app(
     try:
         from starlette.applications import Starlette
         from starlette.requests import Request
-        from starlette.responses import JSONResponse, StreamingResponse, Response
+        from starlette.responses import JSONResponse, StreamingResponse, Response, HTMLResponse
         from starlette.routing import Route
         import httpx
     except ImportError:
@@ -1023,7 +1120,22 @@ def create_app(
 
     # ── Stats / Health ──
 
-    async def handle_stats(request: Request) -> JSONResponse:
+    async def handle_stats(request: Request):
+        # A single original→compressed pair (?sample=N, newest = 0) — the local
+        # dashboard's paged view fetches one at a time. Always JSON, regardless of
+        # Accept, since it's a data request.
+        sp = request.query_params.get("sample")
+        if sp is not None:
+            try:
+                idx = int(sp)
+            except (TypeError, ValueError):
+                idx = 0
+            return JSONResponse(proxy_stats.samples_page(idx))
+        # A browser gets the visual dashboard; curl / the hosted meter / any
+        # programmatic caller (Accept: */* or application/json) still gets the JSON
+        # snapshot, so nothing that reads /stats today breaks.
+        if "text/html" in (request.headers.get("accept", "") or ""):
+            return HTMLResponse(STATS_DASHBOARD_HTML)
         return JSONResponse(proxy_stats.snapshot())
 
     async def handle_health(request: Request) -> JSONResponse:
@@ -1982,7 +2094,9 @@ def create_app(
         Route("/health", handle_health, methods=["GET"]),
     ]
 
-    return Starlette(routes=routes, lifespan=lifespan)
+    app = Starlette(routes=routes, lifespan=lifespan)
+    app.state.proxy_stats = proxy_stats  # exposed for tests / introspection
+    return app
 
 
 def _preflight_backend(config_path: str | None) -> None:
