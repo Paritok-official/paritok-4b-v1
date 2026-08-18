@@ -150,6 +150,153 @@ def config():
     click.echo(f"\nShadow Storage: {cfg.shadow_storage}")
 
 
+# Content for the compression smoke test: repetitive tool output, which is the
+# easy case for the compressor. If this does not shrink, nothing will.
+_SMOKE_CONTENT = "".join(
+    f"  File \"/app/handlers/route_{i}.py\", line {i}, in dispatch\n"
+    f"    raise ValueError(f\"unroutable payload {{payload!r}}\")  # frame {i}\n"
+    for i in range(60)
+)
+_SMOKE_QUERY = "Which handler raises ValueError on an unroutable payload?"
+_SMOKE_MAX_RATIO = 0.9
+
+
+def _ok(msg, detail=""):
+    click.echo(f"  {click.style('OK', fg='green')}   {msg}" + (f" — {detail}" if detail else ""))
+
+
+def _warn(msg, detail=""):
+    click.echo(f"  {click.style('WARN', fg='yellow')} {msg}" + (f" — {detail}" if detail else ""))
+
+
+def _fail(msg, detail=""):
+    click.echo(f"  {click.style('FAIL', fg='red')} {msg}" + (f" — {detail}" if detail else ""))
+
+
+@main.command()
+@click.option("--config-file", default=None, type=click.Path(exists=True),
+              help="Path to YAML config file")
+@click.option("--port", default=8080, type=int, show_default=True,
+              help="Port to check for a running proxy.")
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Host to check for a running proxy.")
+def doctor(config_file, port, host):
+    """Check that compression is actually wired up and working.
+
+    Verifies the backend is reachable AND that a block round-trips materially
+    smaller. The second check is the point: /test reporting healthy does not mean
+    the worker is compressing. When it is not, compress() correctly passes the
+    original through, the proxy returns HTTP 200, and /stats shows
+    `tokens_saved: 0` — which is indistinguishable from "nothing here was
+    compressible" unless you look closely. This command makes that state loud.
+
+    Exits non-zero if any check fails, so it can gate a CI job or a smoke test.
+    """
+    # Same discovery rule as `proxy` / `up`: an explicit --config-file wins,
+    # otherwise pick up a paritok.yaml sitting in the current folder. Checking a
+    # different config than the proxy will actually run would defeat the point.
+    if config_file is None and os.path.exists(_DEFAULT_CONFIG_NAME):
+        config_file = _DEFAULT_CONFIG_NAME
+    cfg = ParitokConfig.load(config_file) if config_file else ParitokConfig.load()
+
+    failures = 0
+    warnings = 0
+
+    click.echo("\nParitok doctor\n" + "-" * 56)
+
+    # -- configuration ----------------------------------------------------
+    click.echo("\nConfiguration")
+    backend = "hosted GPU server" if cfg.use_gpu_server else "self-hosted (Ollama)"
+    _ok("backend", f"{backend} (use_gpu_server: {cfg.use_gpu_server})")
+
+    if cfg.use_gpu_server:
+        if cfg.gpu_server.api_key:
+            _ok("gpu_server.api_key", "set")
+        else:
+            _fail("gpu_server.api_key", "missing — set it in paritok.yaml or PARITOK_API_KEY")
+            failures += 1
+    else:
+        _ok("local_model", f"{cfg.local_model.model} at {cfg.local_model.base_url}")
+
+    # -- backend reachable ------------------------------------------------
+    click.echo("\nBackend")
+    if cfg.use_gpu_server:
+        from paritok.strategies.gpu_server import GpuServerStrategy
+        strategy = GpuServerStrategy(cfg.gpu_server)
+        available, message = strategy.check()
+        if available:
+            _ok("hosted endpoint", message or cfg.gpu_server.base_url)
+        else:
+            _fail("hosted endpoint", message)
+            failures += 1
+    else:
+        from paritok.strategies.local_model import LocalModelStrategy
+        strategy = LocalModelStrategy(cfg.local_model)
+        if strategy.is_available():
+            _ok("Ollama model", f"{cfg.local_model.model} responding")
+        else:
+            _fail("Ollama model", (
+                f"{cfg.local_model.model} not available at {cfg.local_model.base_url}. "
+                "Run: ollama pull paritok/paritok-4b-v1 && "
+                "ollama cp paritok/paritok-4b-v1 paritok-4b-v1"
+            ))
+            failures += 1
+
+    # -- the check that /test cannot do -----------------------------------
+    click.echo("\nCompression")
+    if failures:
+        _warn("smoke test", "skipped — fix the failures above first")
+    else:
+        original = _SMOKE_CONTENT
+        try:
+            compressed = strategy.compress(original, query=_SMOKE_QUERY, kind="log_output")
+        except Exception as e:  # noqa: BLE001 — any failure here is a failed check
+            _fail("smoke test", f"{type(e).__name__}: {e}")
+            failures += 1
+            compressed = None
+
+        if compressed is not None:
+            ratio = len(compressed) / len(original) if original else 1.0
+            summary = f"{len(original):,} → {len(compressed):,} chars (ratio {ratio:.2f})"
+            if ratio <= _SMOKE_MAX_RATIO:
+                _ok("smoke test", summary)
+            else:
+                _fail("smoke test", (
+                    f"{summary}. The backend answered but did not compress, so every "
+                    "request will pass through at full size while still returning 200."
+                ))
+                failures += 1
+
+    # -- proxy, if one is running -----------------------------------------
+    click.echo("\nProxy")
+    stats_url = f"http://{host}:{port}/stats"
+    try:
+        import httpx
+        resp = httpx.get(stats_url, timeout=5.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            _ok("proxy", f"up on {host}:{port} — {data.get('total_requests', 0)} requests seen")
+        else:
+            _warn("proxy", f"{stats_url} returned HTTP {resp.status_code}")
+            warnings += 1
+    except Exception:  # noqa: BLE001 — not running is normal, not an error
+        _warn("proxy", f"nothing listening on {host}:{port} (fine if you have not started it)")
+        warnings += 1
+
+    # -- verdict ----------------------------------------------------------
+    click.echo("-" * 56)
+    if failures:
+        click.echo(
+            f"\n{failures} check(s) failed. Compression is not working end to end; "
+            "any token savings you measure will be zero.\n"
+        )
+        raise SystemExit(1)
+    if warnings:
+        click.echo(f"\nAll critical checks passed ({warnings} warning(s)).\n")
+    else:
+        click.echo("\nAll checks passed. Compression is live.\n")
+
+
 @main.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind to")
 @click.option("--port", default=8080, type=int, help="Port to listen on")
