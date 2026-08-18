@@ -52,6 +52,9 @@ CACHE_READ_MULT: dict[str, float] = {
     "gpt-4o": 0.5,
     "o4": 0.25,
     "o3": 0.25,
+    # MiniMax: cache read = 20% of base input. One family prefix is enough — every
+    # current MiniMax text model prices a cached input token at the same fraction.
+    "minimax": 0.2,
 }
 # Unknown model → assume the deepest discount (smallest saving) to avoid overstating.
 DEFAULT_CACHE_READ_MULT = 0.1
