@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -38,6 +39,26 @@ def _clip(text: str, n: int = _STATS_SAMPLE_CHARS) -> str:
     if len(text) <= n:
         return text
     return text[:n] + f"\n… (+{len(text) - n:,} more chars)"
+
+
+# Pin-on-expand is OPT-IN (default OFF). When enabled, a [REF] the model expands via
+# read_original is pinned so it passes through VERBATIM for the rest of the session
+# instead of being re-compressed. That avoids the model re-expanding the same file every
+# turn, but measured net-negative on typical coding tasks: the pinned file is then re-sent
+# UNCOMPRESSED on every subsequent turn, which on read/edit-heavy sessions wipes out its
+# compression entirely (the re-send costs more than the occasional re-expand it saves).
+# Off unless a caller opts in with PARITOK_PIN_ON_EXPAND=1.
+def _maybe_pin_expanded(storage, ref: str) -> bool:
+    """Pin an expanded ref (source path + content hash) so it's passed through verbatim
+    afterward. OPT-IN via PARITOK_PIN_ON_EXPAND; a no-op returning False by default.
+    Returns True iff it pinned."""
+    if not ref or not os.environ.get("PARITOK_PIN_ON_EXPAND"):
+        return False
+    src = storage.get_path_for_shadow(ref)
+    if src:
+        storage.pin_source(src)
+    storage.pin_shadow(ref)
+    return True
 
 
 @dataclass
@@ -1290,18 +1311,11 @@ def create_app(
         return (call_input.get("shadow_id") or call_input.get("id") or "").strip()
 
     def _pin_expanded(ref: str) -> None:
-        """After the model expands a ref, stop it from being re-compressed (and thus
-        re-expanded) every turn. If the ref has a source PATH (Read/Edit), pin the path
-        so future reads of that file pass through verbatim. Always also pin the CONTENT
-        (shadow_id) itself, so path-less content (Bash / Grep / pytest output — which has
-        no file_path and so can't be pinned by path) is covered too."""
-        import os as _os  # TEMP A/B gate for pin testing; not committed
-        if not ref or _os.environ.get("PARITOK_NO_PIN"):
-            return
-        src = engine.storage.get_path_for_shadow(ref)
-        if src:
-            engine.storage.pin_source(src)
-        engine.storage.pin_shadow(ref)
+        """Pin an expanded ref so it's not re-compressed (and re-expanded) every turn.
+        OPT-IN, default OFF — see the module-level `_maybe_pin_expanded` for why it's
+        off by default (net-negative on typical coding tasks; PARITOK_PIN_ON_EXPAND=1
+        to re-enable)."""
+        _maybe_pin_expanded(engine.storage, ref)
 
     _EDIT_TOOLS = ("Edit", "str_replace", "str_replace_editor")
 
