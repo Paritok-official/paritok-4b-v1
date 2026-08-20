@@ -62,11 +62,17 @@ def classify_kind_from_content(content: str) -> str:
     head = content[:300]
     if "[tool_calls]:" in head or '"str_replace_editor"' in head:
         return "file_operation"
-    if "Traceback" in content or "FAILED" in content or "Error:" in head[:200]:
-        return "log_output"
+    # Refine cat -n / code reads to file_read BEFORE the error-marker check runs, so
+    # a Read whose body merely contains 'Traceback'/'FAILED' (extremely common in
+    # tests, error-handling code, and log fixtures) isn't misrouted to log_output —
+    # which would serve other.txt instead of the file_read prompt (issue #48).
     kind = reclassify_tool_result("tool_result", content)
     if kind != "tool_result":
         return kind
+    # Genuine error / log output. Scoped to `head` (not the whole body) as a
+    # fallback marker, so source that merely mentions these deeper down stays code.
+    if "Traceback" in head or "FAILED" in head or "Error:" in head[:200]:
+        return "log_output"
     if "@@" in head[:200] or head.lstrip().startswith(("/", ".", "#!")):
         return "file_read"
     # Code-like content (def/class/import present) → file_read. Without a
