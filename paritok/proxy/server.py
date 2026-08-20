@@ -1160,7 +1160,15 @@ def create_app(
         return JSONResponse(proxy_stats.snapshot())
 
     async def handle_health(request: Request) -> JSONResponse:
-        return JSONResponse({"status": "ok", "version": "1.0.0"})
+        # Report the installed package version instead of a frozen literal, so
+        # health checks / dashboards can tell which proxy build is running.
+        try:
+            from importlib.metadata import version
+
+            v = version("paritok")
+        except Exception:
+            v = "unknown"
+        return JSONResponse({"status": "ok", "version": v})
 
     # ── Helpers ──
 
