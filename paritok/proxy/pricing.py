@@ -36,6 +36,12 @@ INPUT_USD_PER_MTOK: dict[str, float] = {
     "o4-mini": 1.10,
     "o3-mini": 1.10,
     "o3": 2.00,
+    # MiniMax
+    # M3 is tiered on input length: $0.30/M at <=512K, $0.60/M above it. This
+    # table holds one flat standard rate per model, so we use the <=512K tier —
+    # the common case. Cost estimates under-count a >512K-context request by ~2x.
+    "minimax-m3": 0.30,
+    "minimax-m2.7": 0.30,
 }
 
 # Cache-READ multiplier: what a provider charges for an input token served from
