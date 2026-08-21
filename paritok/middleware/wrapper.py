@@ -42,6 +42,12 @@ class CompressionStats:
     compressed_tokens: int = 0
     items_compressed: int = 0
     items_skipped: int = 0
+    # Passthrough content that never reached the compressor (below-min-tokens,
+    # backend error/timeout, gpu-unavailable, above-max, ...). Kept OUT of
+    # original/compressed so the ratio reflects only what we actually compressed;
+    # surfaced separately by reason, conceptually like output tokens (untouched).
+    skipped_tokens: int = 0
+    skipped_by_reason: dict = field(default_factory=dict)
     cache_hits: int = 0
     tools_original: int = 0
     tools_kept: int = 0
@@ -72,6 +78,27 @@ class CompressionStats:
             "original_tokens": cr.original_tokens,
             "compressed_tokens": cr.compressed_tokens,
         })
+
+    def record_result(self, cr) -> None:
+        """Fold one CompressionResult into the running stats.
+
+        Passthrough (skipped) content — below-min-tokens, backend error/timeout,
+        gpu-unavailable, above-max, etc. — never reached our compressor, so it is
+        tracked separately as skipped_tokens (by reason) and kept OUT of
+        original/compressed, so the compression ratio reflects only content we
+        actually compressed. A cache-hit / path-short-circuit result IS a real
+        compression (an earlier compressed body re-sent), so it still counts."""
+        if cr.metadata.get("skipped"):
+            self.items_skipped += 1
+            self.skipped_tokens += cr.original_tokens
+            reason = cr.metadata.get("reason", "unknown")
+            self.skipped_by_reason[reason] = self.skipped_by_reason.get(reason, 0) + cr.original_tokens
+            return
+        self.original_tokens += cr.original_tokens
+        self.compressed_tokens += cr.compressed_tokens
+        self.items_compressed += 1
+        if cr.metadata.get("cache_hit") or cr.metadata.get("path_shortcircuit"):
+            self.cache_hits += 1
 
     @property
     def saved_tokens(self) -> int:
@@ -472,14 +499,7 @@ def _compress_block(
     if isinstance(content, str) and content.strip():
         cr = pipeline.compress(content, query=query, source=source,
                                upstream_model=upstream_model)
-        stats.original_tokens += cr.original_tokens
-        stats.compressed_tokens += cr.compressed_tokens
-        if cr.metadata.get("skipped"):
-            stats.items_skipped += 1
-        else:
-            stats.items_compressed += 1
-        if cr.metadata.get("cache_hit") or cr.metadata.get("path_shortcircuit"):
-            stats.cache_hits += 1
+        stats.record_result(cr)
         stats.add_sample(content, cr, source)
         return {**block, "content": cr.compressed}
 
@@ -491,14 +511,7 @@ def _compress_block(
                 if text.strip():
                     cr = pipeline.compress(text, query=query, source=source,
                                            upstream_model=upstream_model)
-                    stats.original_tokens += cr.original_tokens
-                    stats.compressed_tokens += cr.compressed_tokens
-                    if cr.metadata.get("skipped"):
-                        stats.items_skipped += 1
-                    else:
-                        stats.items_compressed += 1
-                    if cr.metadata.get("cache_hit") or cr.metadata.get("path_shortcircuit"):
-                        stats.cache_hits += 1
+                    stats.record_result(cr)
                     stats.add_sample(text, cr, source)
                     new_content.append({**item, "text": cr.compressed})
                 else:

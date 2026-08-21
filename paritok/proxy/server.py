@@ -73,6 +73,12 @@ class ProxyStats:
     # full), and how many lossy Edit calls edit_recovery rewrote to match the file.
     total_expansions: int = 0
     total_edits_recovered: int = 0
+    # Passthrough tokens that never went through the compressor (below-min-tokens,
+    # backend error/timeout, gpu-unavailable, ...). Tracked separately from
+    # original/compressed so the ratio isn't diluted by content we didn't touch —
+    # like output tokens, it's outside paritok's compression.
+    total_skipped_tokens: int = 0
+    skipped_by_reason: dict = field(default_factory=dict)
     # Per-model buckets for the parts THIS middleware touches — the content it
     # compresses (tool results / file reads / old history) PLUS the tool schemas
     # it stubs. {model: {"orig", "comp"}}: `orig` = what those parts would be
@@ -105,6 +111,9 @@ class ProxyStats:
         self.requests_processed += 1
         self.total_tools_filtered += stats.tools_filtered
         self.total_items_compressed += stats.items_compressed
+        self.total_skipped_tokens += getattr(stats, "skipped_tokens", 0)
+        for _reason, _n in getattr(stats, "skipped_by_reason", {}).items():
+            self.skipped_by_reason[_reason] = self.skipped_by_reason.get(_reason, 0) + _n
         orig = stats.original_tokens + tools_original_tokens
         comp = stats.compressed_tokens + tools_compressed_tokens
         self.total_original_tokens += orig
@@ -269,6 +278,11 @@ class ProxyStats:
             "tools_filtered": self.total_tools_filtered,
             "expansions": self.total_expansions,
             "edits_recovered": self.total_edits_recovered,
+            # Passthrough tokens paritok did NOT compress (below-min-tokens, backend
+            # error/timeout, gpu-unavailable, ...), excluded from the ratio above and
+            # reported separately, by reason.
+            "tokens_skipped": self.total_skipped_tokens,
+            "skipped_by_reason": self.skipped_by_reason,
             "estimated_cost_saved_usd": f"${self.estimated_cost_saved_usd:.2f}",
             # How many recent original→compressed pairs are available; each is
             # fetched one at a time via GET /stats?sample=N (#42). Local-only by

@@ -107,9 +107,11 @@ STATS_DASHBOARD_HTML = """<!doctype html>
   .chart-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     color:var(--ink-faint);font-size:12.5px}
 
-  .mini{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:16px}
+  .mini{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:16px}
+  @media(max-width:820px){.mini{grid-template-columns:repeat(2,1fr)}}
   @media(max-width:460px){.mini{grid-template-columns:1fr}}
   .mini .split{margin:0}
+  .s-sub{font-size:10.5px;color:var(--ink-faint);margin-top:3px;letter-spacing:0}
 
   /* recent compressions — original → compressed before/after, one per page */
   .samples{margin-top:26px}
@@ -225,6 +227,9 @@ STATS_DASHBOARD_HTML = """<!doctype html>
       <div class="s-v"><span id="mTools" class="mono">0</span><span class="s-unit">tools dropped</span></div></div>
     <div class="split"><div class="s-l">Context expansions</div><div id="mExp" class="s-v mono">0</div></div>
     <div class="split"><div class="s-l">Edits recovered</div><div id="mEdit" class="s-v mono">0</div></div>
+    <div class="split"><div class="s-l">Passthrough (not compressed)</div>
+      <div class="s-v"><span id="mSkip" class="mono">0</span><span class="s-unit">tok skipped</span></div>
+      <div id="mSkipSub" class="s-sub"></div></div>
   </div>
 
   <div class="samples">
@@ -405,6 +410,10 @@ STATS_DASHBOARD_HTML = """<!doctype html>
     $("mTools").textContent=fmt(d.tools_filtered);
     $("mExp").textContent=fmt(d.expansions);
     $("mEdit").textContent=fmt(d.edits_recovered);
+    $("mSkip").textContent=fmt(d.tokens_skipped);
+    var byr=d.skipped_by_reason||{}, rk=Object.keys(byr);
+    rk.sort(function(a,b){return byr[b]-byr[a];});
+    $("mSkipSub").textContent = rk.length ? rk.slice(0,2).map(function(k){return k+" "+fmt(byr[k]);}).join(" · ") : "";
     syncSamples(d.compression_samples_count);
 
     // accumulate the live series (only push when it changes or on first point)
