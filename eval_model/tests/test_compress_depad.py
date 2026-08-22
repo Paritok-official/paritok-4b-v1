@@ -65,8 +65,24 @@ def test_depad_before_chunk_decision_keeps_single_shot():
 
     calls = _run_capturing_chunks(ctx, chunk)
 
-    # Fix: de-padded body fits under `chunk` -> ONE single-shot SEG (not a split).
+    # Fix 1: de-padded body fits under `chunk` -> ONE single-shot SEG (not a split).
     assert len(calls) == 1, f"expected single-shot, got {len(calls)} chunks (padded size leaked into the split decision)"
     # And the content handed to the model is de-padded (no "     123\t" prefixes).
     assert not _PADDED.search(calls[0]), "model input still has width-padded line numbers"
     assert re.search(r"(?m)^\d+\t", calls[0]), "de-padded bare 'N\\t' line numbers missing"
+
+
+def test_no_leading_blank_line_reaches_the_model():
+    """The `# File:` split leaves a leading '\\n' on each body ("\\n1\\t..."). Wrapped
+    as "[SEG ...]\\n{body}", that opens the SEG with a blank line ("[SEG ...]\\n\\n1\\t..")
+    — out-of-distribution for the 4B and it collapses compression (0.23 -> 0.60 on the
+    GPU for the same file). compress_context must strip it so the content immediately
+    follows the SEG tag."""
+    ctx = _padded_body(40)  # small: one single-shot SEG, body carries the split's "\n"
+    calls = _run_capturing_chunks(ctx, chunk=10_000)  # big threshold -> guaranteed single-shot
+    assert len(calls) == 1
+    got = calls[0]
+    assert got[:1] != "\n" and not got[:1].isspace(), (
+        f"model input starts with whitespace/blank line: {got[:20]!r} — the SEG would open '[SEG]\\n\\n'"
+    )
+    assert got == got.strip(), "model input has leading/trailing whitespace"
