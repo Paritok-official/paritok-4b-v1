@@ -36,6 +36,7 @@ import json
 import os
 import re
 import sys
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Allow `python eval_model/run.py` from the repo root: put the repo root on the path so
@@ -51,13 +52,44 @@ def _p(msg: str) -> None:
     print(msg, flush=True)
 
 
+# The RunPod pod (gpu-serverless/Dockerfile) PINS this Ollama version; the ~0.24
+# retention only reproduces on it. Newer Ollama silently under-compresses to ~0.60.
+_EXPECTED_OLLAMA = "0.32.1"
+
+
+def _check_ollama_version(endpoint: str) -> None:
+    """Warn loudly if the local Ollama isn't the version the pod pins. This model's
+    validated ~0.24 retention only reproduces on Ollama 0.32.1; on other versions it
+    silently under-compresses to ~0.60, so the QR from such a run is NOT comparable to
+    the published numbers (verified: same model/prompt/greedy, 0.32.1 -> 0.24 vs
+    0.32.15 -> 0.60). Also verify the endpoint is /v1/chat/completions, not /api/chat."""
+    host = endpoint.split("/v1")[0].split("/api")[0].rstrip("/")
+    try:
+        v = json.loads(urllib.request.urlopen(host + "/api/version", timeout=5).read())["version"]
+    except Exception:
+        _p("  [warn] could not query Ollama /api/version — is `ollama serve` running "
+           f"at {host}?")
+        return
+    if v == _EXPECTED_OLLAMA:
+        _p(f"  Ollama {v} OK (matches the pod-pinned version)")
+    else:
+        _p(f"  [!! WARNING !!] Ollama {v} detected, but this model's ~0.24 compression "
+           f"only reproduces on Ollama {_EXPECTED_OLLAMA} (the version gpu-serverless/"
+           f"Dockerfile pins). Other versions silently under-compress to ~0.60 — the "
+           f"quality-retained number from THIS run is NOT comparable to the published "
+           f"results. Install Ollama {_EXPECTED_OLLAMA} to reproduce.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Paritok SWE-bench Lite quality-retained eval")
     ap.add_argument("--n", type=int, default=300, help="instances (default: full Lite = 300)")
     ap.add_argument("--chunk", type=int, default=3000)
     ap.add_argument("--compress-model", default="paritok-4b-v1:latest",
                     help="local Ollama model name")
-    ap.add_argument("--ollama-url", default="http://localhost:11434/api/chat")
+    ap.add_argument("--ollama-url", default="http://localhost:11434/v1/chat/completions",
+                    help="Ollama OpenAI-compat endpoint. MUST be /v1/chat/completions — "
+                         "native /api/chat reuses the system-prompt KV cache and flips this "
+                         "model's compression to ~0.60 after the first request (see compress.py).")
     ap.add_argument("--agent-model",
                     default=os.environ.get("PARITOK_EVAL_AGENT_MODEL", "claude-sonnet-4-5-20250929"))
     ap.add_argument("--agent-workers", type=int, default=6)
@@ -95,6 +127,7 @@ def main() -> None:
 
     _p(f"[1-2/5] preparing + compressing up to {args.n} instances "
        f"({args.compress_model}, chunk={args.chunk}, level L1, serial)...")
+    _check_ollama_version(args.ollama_url)
     records: list[dict] = []
     cstats = {"chunks": 0, "passthrough": 0}  # count chunks that Ollama failed to compress
     with open(cache_path, "a", encoding="utf-8") as cf:
@@ -113,7 +146,7 @@ def main() -> None:
                           if args.line_numbers else rec["full_context"])
             rec["compressed_context"] = compress.compress_context(
                 comp_input, rec["problem_statement"],
-                chunk=args.chunk, ollama_url=args.ollama_url, model=args.compress_model,
+                chunk=args.chunk, endpoint=args.ollama_url, model=args.compress_model,
                 stats=cstats,
             )
             cf.write(json.dumps(rec, ensure_ascii=False) + "\n")
