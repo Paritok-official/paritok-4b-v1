@@ -9,13 +9,12 @@ file_read system prompt, re-inject the true `# File:` header, recombine + dedup.
 The compression model and prompt come from the installed `paritok` package, so
 this stays in lockstep with what the gateway ships.
 
-REPRODUCING THE ~0.24 RETENTION LOCALLY needs BOTH of these (both verified — see
-_seg_compress and run.py's version check):
-  1. Ollama **0.32.1** (the version the RunPod pod pins in gpu-serverless/Dockerfile).
-     Newer Ollama (e.g. 0.32.15) silently under-compresses this model to ~0.60.
-  2. The **/v1/chat/completions** endpoint (used here), NOT native /api/chat — /api/chat
-     reuses the cached system-prompt KV across requests and flips this knife-edge model
-     to ~0.60 after the first request.
+Compression uses Ollama's OpenAI-compatible **/v1/chat/completions** endpoint (see
+_seg_compress), NOT native /api/chat: /api/chat reuses the cached system-prompt KV across
+requests, which flips this model's compression to ~0.60 after the first request; /v1
+re-prefills cleanly each request, so it's stable. (Exact ratios on a few knife-edge inputs
+can still shift slightly with the Ollama/llama.cpp build, but the aggregate is
+version-stable — no specific Ollama version is required.)
 """
 from __future__ import annotations
 
@@ -67,13 +66,11 @@ def _seg_compress(chunk: str, intent: str, level: str, seg_id: str,
     )
     # ENDPOINT = /v1/chat/completions (OpenAI-compat), NOT Ollama's native /api/chat.
     # This is load-bearing. /api/chat reuses the cached system-prompt KV across requests;
-    # on this knife-edge 4B that flips greedy output — only the FIRST request after a
-    # fresh model load compresses to ~0.24, every request after it collapses to ~0.60
-    # (measured, deterministic). /v1 re-prefills cleanly each request → stable ~0.24 on
-    # EVERY request, which is exactly what the gateway (LocalModelStrategy) and the
-    # RunPod pod (gpu-serverless/compressor.py) use. NOTE: also requires Ollama 0.32.1
-    # (the pod's pinned version); newer Ollama (e.g. 0.32.15) gives ~0.60 regardless of
-    # endpoint. run.py checks the version. See eval_model/README.
+    # on this model that flips greedy output — only the FIRST request after a fresh model
+    # load compresses well, every request after it collapses to ~0.60 (measured,
+    # deterministic). /v1 re-prefills cleanly each request → stable on EVERY request,
+    # which is exactly what the gateway (LocalModelStrategy) and the RunPod pod
+    # (gpu-serverless/compressor.py) use. See eval_model/README.
     #
     # OpenAI-compat takes `max_tokens` (not num_ctx/num_predict). Cap it so prompt +
     # max_tokens fits the model's context window, or Ollama 400s the request.

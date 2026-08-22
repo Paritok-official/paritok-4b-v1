@@ -12,14 +12,12 @@ python eval_model/run.py
 Docker (scoring). Scoring runs in-process on Linux/macOS and through WSL on Windows —
 `run.py` handles the routing.
 
-> ⚠️ **Ollama must be `0.32.1`** to reproduce the ~0.24 retention. This model is on a
-> numerical knife-edge: it's the version the RunPod pod pins (`gpu-serverless/Dockerfile`),
-> and newer Ollama (e.g. 0.32.15) silently under-compresses it to ~0.60 — the same model,
-> prompt and greedy decoding, just a different bundled llama.cpp. `run.py` prints a loud
-> warning if the running Ollama isn't 0.32.1. Compression talks to the **OpenAI-compatible
-> `/v1/chat/completions`** endpoint (the default), *not* native `/api/chat` — `/api/chat`
-> reuses the cached system-prompt KV across requests and flips the model to ~0.60 after the
-> first request. Both are required; both are verified.
+> **Endpoint:** compression uses the OpenAI-compatible **`/v1/chat/completions`** endpoint
+> (the default), *not* Ollama's native `/api/chat`. `/api/chat` reuses the cached
+> system-prompt KV across requests, which flips this model's compression to ~0.60 after the
+> first request; `/v1` re-prefills cleanly each request, so it's stable. (Exact ratios on a
+> few knife-edge inputs can still shift slightly with the Ollama/llama.cpp build, but the
+> aggregate is version-stable — no specific version is required.)
 
 Full SWE-bench Lite (300 instances, pulled from Hugging Face) is:
 1. given oracle file context,

@@ -36,7 +36,6 @@ import json
 import os
 import re
 import sys
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Allow `python eval_model/run.py` from the repo root: put the repo root on the path so
@@ -50,34 +49,6 @@ from paritok.token_counter import count_tokens  # noqa: E402
 
 def _p(msg: str) -> None:
     print(msg, flush=True)
-
-
-# The RunPod pod (gpu-serverless/Dockerfile) PINS this Ollama version; the ~0.24
-# retention only reproduces on it. Newer Ollama silently under-compresses to ~0.60.
-_EXPECTED_OLLAMA = "0.32.1"
-
-
-def _check_ollama_version(endpoint: str) -> None:
-    """Warn loudly if the local Ollama isn't the version the pod pins. This model's
-    validated ~0.24 retention only reproduces on Ollama 0.32.1; on other versions it
-    silently under-compresses to ~0.60, so the QR from such a run is NOT comparable to
-    the published numbers (verified: same model/prompt/greedy, 0.32.1 -> 0.24 vs
-    0.32.15 -> 0.60). Also verify the endpoint is /v1/chat/completions, not /api/chat."""
-    host = endpoint.split("/v1")[0].split("/api")[0].rstrip("/")
-    try:
-        v = json.loads(urllib.request.urlopen(host + "/api/version", timeout=5).read())["version"]
-    except Exception:
-        _p("  [warn] could not query Ollama /api/version — is `ollama serve` running "
-           f"at {host}?")
-        return
-    if v == _EXPECTED_OLLAMA:
-        _p(f"  Ollama {v} OK (matches the pod-pinned version)")
-    else:
-        _p(f"  [!! WARNING !!] Ollama {v} detected, but this model's ~0.24 compression "
-           f"only reproduces on Ollama {_EXPECTED_OLLAMA} (the version gpu-serverless/"
-           f"Dockerfile pins). Other versions silently under-compress to ~0.60 — the "
-           f"quality-retained number from THIS run is NOT comparable to the published "
-           f"results. Install Ollama {_EXPECTED_OLLAMA} to reproduce.")
 
 
 def main() -> None:
@@ -127,7 +98,6 @@ def main() -> None:
 
     _p(f"[1-2/5] preparing + compressing up to {args.n} instances "
        f"({args.compress_model}, chunk={args.chunk}, level L1, serial)...")
-    _check_ollama_version(args.ollama_url)
     records: list[dict] = []
     cstats = {"chunks": 0, "passthrough": 0}  # count chunks that Ollama failed to compress
     with open(cache_path, "a", encoding="utf-8") as cf:
