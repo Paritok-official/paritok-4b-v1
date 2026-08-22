@@ -17,6 +17,7 @@ import time
 import urllib.request
 
 from paritok.token_counter import count_tokens
+from paritok.pipelines.compress import _depad_line_numbers
 from paritok.strategies.prompts import system_prompt_for_kind
 from paritok.strategies.chunking import (
     split_into_chunks_structural,
@@ -34,6 +35,8 @@ def _seg_compress(chunk: str, intent: str, level: str, seg_id: str,
                   stats: dict | None = None) -> str:
     if stats is not None:
         stats["chunks"] = stats.get("chunks", 0) + 1
+    # `chunk` is already de-padded by compress_context (matching production, which
+    # de-pads the whole content before chunking) — see the note there.
     user = (
         "USER INTENT:\n" + intent.strip() + "\n\n"
         "Compress the following segment under the rules in your system prompt. "
@@ -87,6 +90,16 @@ def compress_context(full_context: str, intent: str, *, chunk: int = 3000, level
 
     sections = []
     for path, body in files:
+        # Match production (paritok/pipelines/compress.py): de-pad width-padded Read
+        # line numbers ("     123\t" -> "123\t") on the WHOLE file body BEFORE the
+        # chunk-size decision and chunking. dataset.py emits cat -n padding (as a real
+        # Claude Code Read does), and the 4B was tuned on the bare "N\t" shape, so the
+        # pad is out-of-distribution AND inflates the token count ~20%. That inflation
+        # pushed quality_agent.py (2,878 de-padded) over the 3,000 chunk threshold
+        # (3,460 padded), splitting one file into 2 SEGs — which nearly halved the
+        # compression vs a single-shot pass (measured kept 0.39 vs 0.19 on the GPU).
+        # The gateway de-pads once, then sizes/chunks against the real token count.
+        body = _depad_line_numbers(body)
         if count_tokens(body, ENC) <= chunk:
             section_body = _seg_compress(body, intent, level, "s1", ollama_url, model, num_ctx, timeout, stats)
         else:
