@@ -71,8 +71,10 @@ def test_oversized_intent_truncated_before_backend():
     pipe, model = _pipeline()
     huge_intent = "fix the bug in this function. " * 2000     # thousands of tokens
     pipe.compress(CONTENT, query=huge_intent, kind="file_read")
+    # Use the pipeline's actual num_ctx (from config, not a hardcoded 8192) so this
+    # tracks the configured default — the cap the pipeline applies is computed from it.
     budget = _intent_budget(count_tokens(system_prompt_for_kind("file_read")),
-                            count_tokens(CONTENT), 8192)
+                            count_tokens(CONTENT), pipe._intent_num_ctx)
     assert model.seen_query is not None
     assert count_tokens(model.seen_query) <= budget                 # capped to the budget
     assert count_tokens(model.seen_query) < count_tokens(huge_intent)
