@@ -17,7 +17,7 @@ class LocalModelConfig:
     temperature: float = 0.0
     timeout: float = 120.0
     api_key: str = ""  # optional bearer token (empty for local Ollama)
-    num_ctx: int = 8192  # model context window (matches the shipped Modelfile); output is capped so prompt+generation fit
+    num_ctx: int = 12288  # model context window (matches the shipped Modelfile); output is capped so prompt+generation fit. 12288 (was 8192) so a CHUNK_SIZE=3000 chunk + the ~2.2k system prompt still leaves >2x the chunk for generation — an 8192 window truncated poorly-compressing chunks mid-output.
 
 
 @dataclass
