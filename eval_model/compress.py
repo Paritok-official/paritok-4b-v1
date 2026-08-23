@@ -115,7 +115,7 @@ def _seg_compress(chunk: str, intent: str, level: str, seg_id: str,
 
 def compress_context(full_context: str, intent: str, *, chunk: int = 3000, level: str = "L1",
                      endpoint: str = "http://localhost:11434/v1/chat/completions",
-                     model: str = "paritok-4b-v1:latest", num_ctx: int = 8192,
+                     model: str = "paritok-4b-v1:latest", num_ctx: int = 12288,
                      timeout: float = 1800.0, stats: dict | None = None) -> str:
     """Compress a full `# File:`-framed context; returns the compressed context.
 
