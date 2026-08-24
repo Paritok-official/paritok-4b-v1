@@ -47,7 +47,7 @@ from paritok.strategies.tagger import classify_kind_from_content
 from paritok.token_counter import count_tokens
 
 # Default level when the caller doesn't specify one. L1 (target ≤ 0.35) is the
-# level the SWE-bench Verified benchmark was run at, so the runtime reproduces
+# level the SWE-bench Lite benchmark was run at, so the runtime reproduces
 # the reported compression rate / quality-retained numbers.
 DEFAULT_LEVEL = "L1"
 

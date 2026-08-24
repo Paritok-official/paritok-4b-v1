@@ -1,7 +1,7 @@
 """Structural chunking for long compression inputs.
 
 Ported verbatim from training/scripts/swe_bench_compress_local.py, the SEG/level
-production path. The runtime MUST match the SWE-bench Verified benchmark exactly,
+production path. The runtime MUST match the SWE-bench Lite benchmark exactly,
 which was evaluated with:
     CHUNK_SIZE = 2000
     max_single_block = 2000
