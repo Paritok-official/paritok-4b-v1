@@ -1,18 +1,5 @@
-"""Regression tests for eval_model.compress line-number handling.
-
-compress_context has a `depad` switch:
-  - depad=False (DEFAULT): feed the model the PADDED cat -n numbers dataset.py emits.
-    On SWE-bench this compresses tighter and degenerates less (same-batch GPU A/B:
-    padded 18.5% vs bare 23.7% global kept; 08-17 padded run 48/100 beat baseline 46,
-    vs a bare run's 42/100 + 8 harness errors). This is the eval's headline path.
-  - depad=True: de-pad to the bare `N\t` shape BEFORE the chunk-size decision, the
-    gateway's production-parity path. Sizing on the real (de-padded) token count also
-    keeps a body that only overflows because of the padding as one single-shot SEG
-    (padded `{n:6d}\t` inflates ~20%: quality_agent.py is 2,878 tok de-padded but
-    3,460 padded — the pad alone would push it over a 3,000 chunk and split it).
-
-No model/network needed: the model call is stubbed so these assert the routing +
-line-number shape, not the model output.
+"""Regression tests for eval_model.compress line-number handling (the `depad` switch).
+The model call is stubbed, so these assert the routing + line-number shape only.
 
 Run: python -m pytest eval_model/tests/
 """
