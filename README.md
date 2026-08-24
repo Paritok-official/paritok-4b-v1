@@ -1,7 +1,7 @@
 <h1 align="center">Paritok</h1>
 
 <p align="center"><b>A non-destructive compression gateway for coding agents — cut your input-token bill without changing your agent.</b></p>
-<p align="center">Paritok sits between your agent and the LLM as a drop-in proxy. On every request it strips the tool-schema bloat, compresses tool results and file reads, and summarizes stale history — then forwards upstream, billed on the compressed tokens. Nothing is ever permanently discarded: the agent pulls back any exact original on demand. Works with <b>Claude Code, Cursor, Codex, OpenHands</b>, and any agent that honors <code>BASE_URL</code> — <b>you don't change a line of your agent</b>.<br/><br/>Powered by the <b>first open-source 4B compression model trained specifically for coding agents</b> (45K real trajectories). Cut input token bills from <b>~25% on turn one</b> to <b>past 85% in long, context-saturated sessions</b>, and fit <b>~3× more turns</b> in the same context window.</p>
+<p align="center">Paritok sits between your agent and the LLM as a drop-in proxy. On every request it strips the tool-schema bloat, compresses tool results and file reads, and summarizes stale history — then forwards upstream, billed on the compressed tokens. Nothing is ever permanently discarded: the agent pulls back any exact original on demand. Works with <b>Claude Code, Cursor, Codex, OpenHands</b>, and any agent that honors <code>BASE_URL</code> — <b>you don't change a line of your agent</b>.<br/><br/>Powered by the <b>first open-source 4B compression model trained specifically for coding agents</b> (45K teacher-distilled samples from 67K real trajectories). Cut input token bills from <b>~25% on turn one</b> to <b>past 85% in long, context-saturated sessions</b>, and fit <b>~3× more turns</b> in the same context window.</p>
 
 <p align="center">
   <img src="./paritok-compression.png" alt="Paritok compression: 3,000 tokens shrunk to 780 with semantics intact" width="820"/>
@@ -473,12 +473,13 @@ Reach us: [paritok9@gmail.com](mailto:paritok9@gmail.com) · X [@Paritok](https:
 ## 📖 Citation
 
 ```bibtex
-@misc{paritok-4b-v1,
-  author       = {Paritok Team},
+@software{paritok-4b-v1,
+  author       = {Shi, Jiayu and Chen, Luzhuo},
   title        = {Paritok-4B-v1: An Open-Source Compression Model for AI Coding Agents},
   year         = {2026},
-  publisher    = {GitHub},
-  howpublished = {\url{https://github.com/Paritok-official/paritok-4b-v1}},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.22043550},
+  url          = {https://github.com/Paritok-official/paritok-4b-v1},
 }
 ```
 

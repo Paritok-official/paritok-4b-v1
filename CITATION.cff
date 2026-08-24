@@ -1,9 +1,20 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 authors:
-  - name: "Paritok Team"
+  - family-names: Shi
+    given-names: Jiayu
+    affiliation: "Paritok, Bytey, Inc."
+  - family-names: Chen
+    given-names: Luzhuo
+    affiliation: "Paritok, Bytey, Inc."
+    orcid: "https://orcid.org/0009-0009-0144-6315"
 title: "Paritok-4B-v1: An Open-Source Compression Model for AI Coding Agents"
 version: "4B-v1"
 date-released: 2026-07-15
 url: "https://github.com/Paritok-official/paritok-4b-v1"
+repository-code: "https://github.com/Paritok-official/paritok-4b-v1"
 license: Apache-2.0
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.22043550"
+    description: "Concept DOI (resolves to all versions)"

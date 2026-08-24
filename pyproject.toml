@@ -9,7 +9,10 @@ description = "Open-source context compression for AI coding agents. A middle la
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
-authors = [{ name = "Paritok Team" }]
+authors = [
+    { name = "Jiayu Shi" },
+    { name = "Luzhuo Chen" },
+]
 keywords = ["llm", "context", "compression", "coding-agent", "proxy", "token", "optimization", "ollama"]
 classifiers = [
     "Development Status :: 4 - Beta",
