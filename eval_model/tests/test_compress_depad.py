@@ -1,15 +1,18 @@
-"""Regression test for eval_model.compress: the compression path must de-pad the
-width-padded cat -n line numbers BEFORE the chunk-size decision, matching production
-(paritok/pipelines/compress.py de-pads the whole content, then LocalModelStrategy
-sizes/chunks against the real token count).
+"""Regression tests for eval_model.compress line-number handling.
 
-The bug: dataset.line_number_context emits padded `{n:6d}\t` (as a real Claude Code
-Read does), which inflates the token count ~20%. compress_context used to test that
-PADDED size against `chunk`, so a file that fits in one SEG de-padded (e.g.
-quality_agent.py: 2,878 tok) was pushed over the 3,000 threshold (3,460 padded) and
-split into 2 SEGs — nearly halving the compression the model achieves single-shot
-(measured kept 0.39 vs 0.19 on the GPU). No model/network needed: the model call is
-stubbed so this asserts the routing + de-pad, not the model output.
+compress_context has a `depad` switch:
+  - depad=False (DEFAULT): feed the model the PADDED cat -n numbers dataset.py emits.
+    On SWE-bench this compresses tighter and degenerates less (same-batch GPU A/B:
+    padded 18.5% vs bare 23.7% global kept; 08-17 padded run 48/100 beat baseline 46,
+    vs a bare run's 42/100 + 8 harness errors). This is the eval's headline path.
+  - depad=True: de-pad to the bare `N\t` shape BEFORE the chunk-size decision, the
+    gateway's production-parity path. Sizing on the real (de-padded) token count also
+    keeps a body that only overflows because of the padding as one single-shot SEG
+    (padded `{n:6d}\t` inflates ~20%: quality_agent.py is 2,878 tok de-padded but
+    3,460 padded — the pad alone would push it over a 3,000 chunk and split it).
+
+No model/network needed: the model call is stubbed so these assert the routing +
+line-number shape, not the model output.
 
 Run: python -m pytest eval_model/tests/
 """
@@ -34,7 +37,7 @@ def _padded_body(n_lines=130):
     return line_number_context(f"# File: t.py\n{src}\n")
 
 
-def _run_capturing_chunks(full_context, chunk):
+def _run_capturing_chunks(full_context, chunk, depad=False):
     calls = []
 
     def fake_seg(chunk_text, intent, level, seg_id, url, model, num_ctx, timeout, stats=None):
@@ -46,13 +49,15 @@ def _run_capturing_chunks(full_context, chunk):
     orig = ec._seg_compress
     ec._seg_compress = fake_seg
     try:
-        ec.compress_context(full_context, "do the task", chunk=chunk)
+        ec.compress_context(full_context, "do the task", chunk=chunk, depad=depad)
     finally:
         ec._seg_compress = orig
     return calls
 
 
 def test_depad_before_chunk_decision_keeps_single_shot():
+    # depad=True: the production-parity path. Sizing on the de-padded token count keeps
+    # a body that only overflows because of the padding as ONE single-shot SEG.
     ctx = _padded_body()
     body = ctx.split("\n", 1)[1]  # drop the "# File:" header line
     padded_tok = count_tokens(body, ENC)
@@ -63,13 +68,27 @@ def test_depad_before_chunk_decision_keeps_single_shot():
     chunk = (depadded_tok + padded_tok) // 2  # padded > chunk >= de-padded
     assert depadded_tok <= chunk < padded_tok
 
-    calls = _run_capturing_chunks(ctx, chunk)
+    calls = _run_capturing_chunks(ctx, chunk, depad=True)
 
-    # Fix 1: de-padded body fits under `chunk` -> ONE single-shot SEG (not a split).
+    # de-padded body fits under `chunk` -> ONE single-shot SEG (not a split).
     assert len(calls) == 1, f"expected single-shot, got {len(calls)} chunks (padded size leaked into the split decision)"
     # And the content handed to the model is de-padded (no "     123\t" prefixes).
     assert not _PADDED.search(calls[0]), "model input still has width-padded line numbers"
     assert re.search(r"(?m)^\d+\t", calls[0]), "de-padded bare 'N\\t' line numbers missing"
+
+
+def test_padded_is_the_default_model_input():
+    """Default (depad=False) feeds the model PADDED cat -n numbers — the shape that
+    compresses tighter and degenerates less on SWE-bench (same-batch GPU A/B: padded
+    18.5% vs bare 23.7% global kept; the 08-17 padded run resolved 48/100 vs a bare
+    run's 42/100 + 8 errors). A padded body over the threshold may split; what this
+    locks is that the pad is NOT stripped from what the model actually sees."""
+    ctx = _padded_body(40)                       # small -> single-shot SEG
+    calls = _run_capturing_chunks(ctx, chunk=10_000)   # default depad=False
+    assert len(calls) == 1
+    # width-padded "     N\t" prefixes survive to the model (checked on the interior
+    # lines; the whole body is .strip()ed so only line 1 loses its leading pad).
+    assert _PADDED.search(calls[0]), "default path must keep the width-padded line numbers"
 
 
 def test_no_leading_blank_line_reaches_the_model():

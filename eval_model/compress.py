@@ -49,8 +49,8 @@ def _seg_compress(chunk: str, intent: str, level: str, seg_id: str,
                   stats: dict | None = None) -> str:
     if stats is not None:
         stats["chunks"] = stats.get("chunks", 0) + 1
-    # `chunk` is already de-padded by compress_context (matching production, which
-    # de-pads the whole content before chunking) — see the note there.
+    # `chunk` carries whatever line-number shape compress_context chose (PADDED by
+    # default; de-padded only when depad=True) — see the note there.
     #
     # strip() is load-bearing: the 4B was trained on the body IMMEDIATELY following
     # "[SEG ...]\n". A single leading blank line (which the `# File:` split leaves on
@@ -116,7 +116,8 @@ def _seg_compress(chunk: str, intent: str, level: str, seg_id: str,
 def compress_context(full_context: str, intent: str, *, chunk: int = 3000, level: str = "L1",
                      endpoint: str = "http://localhost:11434/v1/chat/completions",
                      model: str = "paritok-4b-v1:latest", num_ctx: int = 12288,
-                     timeout: float = 1800.0, stats: dict | None = None) -> str:
+                     timeout: float = 1800.0, depad: bool = False,
+                     stats: dict | None = None) -> str:
     """Compress a full `# File:`-framed context; returns the compressed context.
 
     Pass a mutable `stats` dict to accumulate {"chunks", "passthrough"} across a run
@@ -129,19 +130,21 @@ def compress_context(full_context: str, intent: str, *, chunk: int = 3000, level
 
     sections = []
     for path, body in files:
-        # Match production (paritok/pipelines/compress.py): de-pad width-padded Read
-        # line numbers ("     123\t" -> "123\t") on the WHOLE file body BEFORE the
-        # chunk-size decision and chunking. dataset.py emits cat -n padding (as a real
-        # Claude Code Read does), and the 4B was tuned on the bare "N\t" shape, so the
-        # pad is out-of-distribution AND inflates the token count ~20%. That inflation
-        # pushed quality_agent.py (2,878 de-padded) over the 3,000 chunk threshold
-        # (3,460 padded), splitting one file into 2 SEGs — which nearly halved the
-        # compression vs a single-shot pass (measured kept 0.39 vs 0.19 on the GPU).
-        # The gateway de-pads once, then sizes/chunks against the real token count.
-        # .strip() drops the leading blank line the `# File:` split leaves on each
-        # body (see the SEG-strip note in _seg_compress — that blank line alone
-        # collapses compression 0.23 -> 0.60 on the same file).
-        body = _depad_line_numbers(body).strip()
+        # Line-number shape fed to the 4B. On SWE-bench, PADDED cat -n numbers
+        # ("     123\t") compress TIGHTER and degenerate LESS than the bare "123\t"
+        # shape, so padded is the DEFAULT here. Two measurements agree:
+        #   - same-batch GPU A/B (20 instances, level L1): padded 18.5% vs bare 23.7%
+        #     global kept, 33.2% vs 36.6% macro, with one FEWER degenerate (>0.6) file;
+        #   - the 08-17 padded run resolved 48/100 (beat baseline 46), vs a bare run's
+        #     42/100 with 8 harness errors (compression broke the target context).
+        # depad=True de-pads to bare BEFORE the chunk-size decision and chunking — the
+        # paritok gateway's production-parity path (it de-pads because Claude Code Read
+        # emits padding). It is looser and more fragile on SWE-bench, so it is OFF by
+        # default and kept only for a production-parity experiment.
+        # .strip() (both paths) drops the leading blank line the `# File:` split leaves
+        # on each body: unstripped it opens the SEG "[SEG ...]\n\n1\t.." — out-of-
+        # distribution, and that blank line alone collapses compression 0.23 -> 0.60.
+        body = (_depad_line_numbers(body) if depad else body).strip()
         if count_tokens(body, ENC) <= chunk:
             section_body = _seg_compress(body, intent, level, "s1", endpoint, model, num_ctx, timeout, stats)
         else:

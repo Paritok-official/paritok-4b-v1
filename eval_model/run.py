@@ -71,6 +71,12 @@ def main() -> None:
                          "line-numbered context and their patches are de-numbered before "
                          "re-anchoring. Compresses more and holds quality; off by default "
                          "so the run reproduces the conservative raw headline.")
+    ap.add_argument("--depad", action="store_true",
+                    help="de-pad the cat -n line numbers to the bare 'N\\t' shape before "
+                         "compression (the gateway's production-parity path). OFF by "
+                         "default: on SWE-bench, padded compresses tighter and is less "
+                         "fragile (48/100 padded vs 42/100 + 8 errors bare; GPU A/B "
+                         "18.5% vs 23.7% global kept). Only meaningful with --line-numbers.")
     ap.add_argument("--out", default=os.path.join("eval_model", "_work"))
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -86,7 +92,8 @@ def main() -> None:
     # the same --out with a different --compress-model doesn't silently reuse the old
     # model's compressed contexts and attribute the QR to the wrong model.
     _slug = re.sub(r"[^\w.-]", "_", args.compress_model)
-    _lnsuf = "_ln" if args.line_numbers else ""   # keep raw and line-num caches separate
+    # keep raw / line-num / de-padded caches separate (each yields different compressed output)
+    _lnsuf = ("_ln" if args.line_numbers else "") + ("_depad" if args.depad else "")
     cache_path = os.path.join(args.out, f"instances_chunk{args.chunk}_{_slug}{_lnsuf}.jsonl")
     done: dict[str, dict] = {}
     if os.path.exists(cache_path):
@@ -117,7 +124,7 @@ def main() -> None:
             rec["compressed_context"] = compress.compress_context(
                 comp_input, rec["problem_statement"],
                 chunk=args.chunk, endpoint=args.ollama_url, model=args.compress_model,
-                stats=cstats,
+                depad=args.depad, stats=cstats,
             )
             cf.write(json.dumps(rec, ensure_ascii=False) + "\n")
             cf.flush()
