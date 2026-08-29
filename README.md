@@ -493,7 +493,7 @@ Cite the **paper** for the method and results:
 }
 ```
 
-The companion paper covers what the model paper deliberately leaves out — where the saving actually lands in a real multi-turn agent, once the accumulating prefix, the tool block, and cache pricing are all in play:
+Cite the **companion paper** for end-to-end cost — what a compression rate does and does not translate into over a full agent session:
 
 ```bibtex
 @misc{paritok-cost-attribution,
@@ -501,14 +501,24 @@ The companion paper covers what the model paper deliberately leaves out — wher
                Multi-Turn Coding Agents: Why Compression Rate Is Not the End-to-End Saving},
   author    = {Chen, Luzhuo and Shi, Jiayu},
   year      = {2026},
-  month     = aug,
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.22043550},
   url       = {https://doi.org/10.5281/zenodo.22043550},
 }
 ```
 
-For the software itself, cite the repository: <https://github.com/Paritok-official/paritok-4b-v1>
+Cite the **software** for this release — the gateway, the weights, and the training and evaluation code:
+
+```bibtex
+@software{paritok-4b-v1,
+  title   = {Paritok-4B-v1: An Open-Source Compression Model for AI Coding Agents},
+  author  = {Shi, Jiayu and Chen, Luzhuo},
+  year    = {2026},
+  version = {4B-v1},
+  license = {Apache-2.0},
+  url     = {https://github.com/Paritok-official/paritok-4b-v1},
+}
+```
 
 ---
 
