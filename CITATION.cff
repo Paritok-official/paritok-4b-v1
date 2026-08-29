@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite the paper (preferred-citation) — or the software entry below when you specifically mean this release."
+message: "If you use this work, please cite the paper (preferred-citation) — or the software entry below when you specifically mean this release."
 authors:
   - family-names: Shi
     given-names: Jiayu
@@ -23,11 +23,8 @@ keywords:
   - qwen3
 identifiers:
   - type: doi
-    value: "10.5281/zenodo.22043550"
-    description: "Concept DOI for the software (resolves to all versions)"
-  - type: doi
     value: "10.48550/arXiv.2608.24188"
-    description: "DOI for the paper describing the model"
+    description: "DOI of the paper describing this model"
 preferred-citation:
   type: article
   authors:
@@ -45,3 +42,22 @@ preferred-citation:
   doi: "10.48550/arXiv.2608.24188"
   url: "https://arxiv.org/abs/2608.24188"
   notes: "arXiv:2608.24188 [cs.AI]"
+references:
+  - type: article
+    authors:
+      - family-names: Chen
+        given-names: Luzhuo
+        affiliation: "Paritok, Bytey, Inc."
+        orcid: "https://orcid.org/0009-0009-0144-6315"
+      - family-names: Shi
+        given-names: Jiayu
+        affiliation: "Paritok, Bytey, Inc."
+    title: "An Empirical Cost Attribution of Context-Compression Gateways in Multi-Turn Coding Agents: Why Compression Rate Is Not the End-to-End Saving"
+    year: 2026
+    month: 8
+    publisher:
+      name: Zenodo
+    doi: "10.5281/zenodo.22043550"
+    url: "https://doi.org/10.5281/zenodo.22043550"
+    license: CC-BY-4.0
+    notes: "Companion paper: takes up the end-to-end agent cost that the model paper deliberately leaves out."
