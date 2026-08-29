@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: "If you use this software, please cite the paper (preferred-citation) — or the software entry below when you specifically mean this release."
 authors:
   - family-names: Shi
     given-names: Jiayu
@@ -13,8 +13,35 @@ version: "4B-v1"
 date-released: 2026-07-15
 url: "https://github.com/Paritok-official/paritok-4b-v1"
 repository-code: "https://github.com/Paritok-official/paritok-4b-v1"
+repository-artifact: "https://huggingface.co/paritok/paritok-4b-v1"
 license: Apache-2.0
+keywords:
+  - prompt-compression
+  - context-compression
+  - coding-agents
+  - llm-inference
+  - qwen3
 identifiers:
   - type: doi
     value: "10.5281/zenodo.22043550"
-    description: "Concept DOI (resolves to all versions)"
+    description: "Concept DOI for the software (resolves to all versions)"
+  - type: doi
+    value: "10.48550/arXiv.2608.24188"
+    description: "DOI for the paper describing the model"
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Shi
+      given-names: Jiayu
+      affiliation: "Paritok, Bytey, Inc."
+    - family-names: Chen
+      given-names: Luzhuo
+      affiliation: "Paritok, Bytey, Inc."
+      orcid: "https://orcid.org/0009-0009-0144-6315"
+  title: "Paritok-4B: Intent-Conditioned Context Compression for Coding Agents"
+  year: 2026
+  month: 8
+  journal: "arXiv"
+  doi: "10.48550/arXiv.2608.24188"
+  url: "https://arxiv.org/abs/2608.24188"
+  notes: "arXiv:2608.24188 [cs.AI]"

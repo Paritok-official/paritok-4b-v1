@@ -8,6 +8,9 @@
 </p>
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2608.24188">
+    <img src="https://img.shields.io/badge/arXiv-2608.24188-b31b1b?logo=arxiv&logoColor=white" alt="arXiv"/>
+  </a>
   <a href="https://huggingface.co/paritok/paritok-4b-v1">
     <img src="https://img.shields.io/badge/🤗%20Model-HuggingFace-yellow" alt="HF Model"/>
   </a>
@@ -415,7 +418,7 @@ The gateway's content compression is powered by **Paritok-4B-v1**, the first ope
 
 - 🎨 **Code-native.** Trained on real coding-agent trajectories (`file_read`, `bash_command`, `log_output`, …). It knows what an import statement is worth vs a debug line, so it protects function names, paths, and error strings while compressing.
 - 🚀 **Compresses each segment to 25.7%** of original — **2× harder than gpt-4.1-mini** (50.2% CR) and **2.4× harder than gpt-5** (61.9% CR).
-- 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Lite — matching gpt-4.1-mini as compressor at **less than half the token spend**.
+- 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Lite (**89.3%** fed the line-numbered input it was trained for, where the paired difference against uncompressed is not significant, p = 0.079) — matching gpt-4.1-mini as compressor at **less than half the token spend**.
 - 🪶 **Small & self-hostable** — 4B LoRA adapter, bf16, runs on a single 24GB GPU. No SaaS, no lock-in, no per-token compressor fee.
 - 🔓 **Fully open** — Apache 2.0 weights, reproducible data pipeline, real end-to-end SWE-bench numbers.
 
@@ -423,14 +426,17 @@ The gateway's content compression is powered by **Paritok-4B-v1**, the first ope
 
 Real end-to-end evaluation. An agent scaffold receives its context through each compressor, then attempts to resolve the issue. Primary metric is **quality retained** (solve rate normalized to the uncompressed baseline).
 
-| Context source            | **Quality retained** ¹ | Compression rate |
-| ------------------------- | :--------------------: | :--------------: |
-| Uncompressed baseline     |         100.0%         |      100.0%      |
-| gpt-4.1-mini (compressor) |          85.6%         |       50.2%      |
-| gpt-5 (compressor)        |          93.6%         |       61.9%      |
-| **Paritok-4B-v1** ⭐      |       **86.5%**        |    **25.7%**     |
+| Context source                       | **Quality retained** ¹ | Compression rate |
+| ------------------------------------ | :--------------------: | :--------------: |
+| Uncompressed baseline                |         100.0%         |      100.0%      |
+| gpt-4.1-mini (compressor)            |          85.6%         |       50.2%      |
+| gpt-5 (compressor)                   |          93.6%         |       61.9%      |
+| Paritok-4B-v1, raw source            |          86.5%         |       25.7%      |
+| **Paritok-4B-v1, line-numbered** ⭐  |       **89.3%**        |    **27.8%**     |
 
-<sub>¹ Quality retained = compressor solve rate ÷ uncompressed baseline solve rate. Higher is better.</sub>
+<sub>¹ Quality retained = compressor solve rate ÷ uncompressed baseline solve rate, where solve rate is resolved ÷ all 300 instances — a patch that fails to apply counts as unresolved. Higher is better.</sub>
+
+<sub>The last row feeds the compressor `cat -n` line-numbered source, which is what real agents actually read (`--line-numbers`); it is the configuration we recommend. On that run the agent resolves 122/300 uncompressed and 109/300 compressed — 30 instances solved only without compression, 17 only with it. An exact McNemar test on those 47 discordant pairs gives **p = 0.079**: at 300 instances, compressing the context to roughly a quarter of its size does *not* significantly reduce the solve rate. The GPT rows are quoted against the raw-source row so all three compressors see the same input.</sub>
 
 > **The benchmark is a floor, not a ceiling.** The 86.5% measures the **raw 4B model** with **no recall enabled** — compressed output fed straight to the agent. What you actually deploy is the gateway: every segment is tagged `[REF:id]` and the agent can call `read_original` to pull back the exact bytes at any time. Nothing is permanently discarded, so real-world deployment recovers quality the raw benchmark leaves on the table. We publish the raw-model number because it's the honest, reproducible floor.
 
@@ -471,6 +477,23 @@ Reach us: [paritok9@gmail.com](mailto:paritok9@gmail.com) · X [@Paritok](https:
 ---
 
 ## 📖 Citation
+
+Cite the **paper** for the method and results:
+
+```bibtex
+@misc{paritok4b,
+  title         = {Paritok-4B: Intent-Conditioned Context Compression for Coding Agents},
+  author        = {Shi, Jiayu and Chen, Luzhuo},
+  year          = {2026},
+  eprint        = {2608.24188},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  doi           = {10.48550/arXiv.2608.24188},
+  url           = {https://arxiv.org/abs/2608.24188},
+}
+```
+
+Cite the **software** when you mean this specific release:
 
 ```bibtex
 @software{paritok-4b-v1,
