@@ -192,7 +192,7 @@ Install and running in minutes on your own hardware. No vendor lock-in.
 
 **Self-host (Apache 2.0): Free forever.** The gateway, the 4B model, and every training script ship open. Run on your own hardware. No telemetry, no key, no fees.
 
-**Hosted GPU ([paritok.com](https://paritok.com)): $0.30 per 1M tokens processed.** No GPU required. **Free through end of August** as we launch, with full pricing kicking in September 1st.
+**Hosted GPU ([paritok.com](https://paritok.com)): $0.30 per 1M tokens processed.** No GPU required. **Free through Oct. 1** as we launch, with full pricing kicking in October 1st.
 
 ---
 
