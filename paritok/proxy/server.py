@@ -660,7 +660,7 @@ def create_app(
     engine = ParitokEngine(config)
     proxy_stats = ProxyStats()
     if http_client is None:
-        http_client = httpx.AsyncClient(timeout=120.0)
+        http_client = httpx.AsyncClient(timeout=config.model.timeout)
 
     def _tools_tokens(tools) -> int:
         """Token size of a tool-schema list (0 when there are none)."""
