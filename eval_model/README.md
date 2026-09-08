@@ -64,3 +64,30 @@ regime: the model **compresses more** and **retains more solve quality**, so the
 results come out **higher**. Given the SWE-bench comparison, we keep it as an optional flag
 rather than the default — the raw run stays the headline (we don't quote a fixed
 figure here), and `--line-numbers` shows that number is a floor, not a ceiling.
+
+### Auditing a finished run: `audit_swebench.py`
+
+`run.py` prints one corpus-level compression rate and moves on to scoring. That
+single number hides two things worth checking, and both are recoverable offline
+from the resumable cache the run already wrote — no GPU, no API calls:
+
+```bash
+python eval_model/audit_swebench.py \
+    --cache eval_model/_work/instances_chunk3000_paritok-4b-v1_latest_ln.jsonl
+```
+
+**Compression rate, distributed.** The headline ratio is corpus-level (total
+compressed tokens ÷ total original tokens), so it is dominated by the largest
+files. The audit reports that same quantity — not a re-definition — with a
+bootstrap CI resampling *instances*, beside the per-instance mean, median and
+deciles, which differ substantially from it. It also counts instances containing
+a ≥2000-char verbatim window, an upper bound on chunks that fell through
+uncompressed.
+
+**Extractiveness, off-distribution.** The identical measure as
+[`eval/extractiveness.py`](../eval/extractiveness.py) (the marker and token
+regexes are kept byte-identical so the two numbers are comparable), run here on
+output the model never trained on. SWE-bench Lite is held out end to end, so this
+answers what the corpus measurement cannot: does the copy behavior generalize?
+See the root [README](../README.md#extractiveness-audited) for the numbers this
+produces on the released checkpoint.

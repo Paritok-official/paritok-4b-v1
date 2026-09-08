@@ -417,6 +417,7 @@ The gateway's content compression is powered by **Paritok-4B-v1**, the first ope
 ### Highlights
 
 - 🎨 **Code-native.** Trained on real coding-agent trajectories (`file_read`, `bash_command`, `log_output`, …). It knows what an import statement is worth vs a debug line, so it protects function names, paths, and error strings while compressing.
+- 📋 **Extractive — audited, not asserted.** It selects spans instead of rewriting them: **96.2%** of the identifiers, paths, and numbers it emits on held-out SWE-bench Lite are copied straight from the input, so an exact-match edit against compressed context still applies.
 - 🚀 **Compresses each segment to 25.7%** of original — **2× harder than gpt-4.1-mini** (50.2% CR) and **2.4× harder than gpt-5** (61.9% CR).
 - 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Lite (**89.3%** fed the line-numbered input it was trained for, where the paired difference against uncompressed is not significant, p = 0.079) — matching gpt-4.1-mini as compressor at **less than half the token spend**.
 - 🪶 **Small & self-hostable** — 4B LoRA adapter, bf16, runs on a single 24GB GPU. No SaaS, no lock-in, no per-token compressor fee.
@@ -441,6 +442,31 @@ Real end-to-end evaluation. An agent scaffold receives its context through each 
 > **The benchmark is a floor, not a ceiling.** The 86.5% measures the **raw 4B model** with **no recall enabled** — compressed output fed straight to the agent. What you actually deploy is the gateway: every segment is tagged `[REF:id]` and the agent can call `read_original` to pull back the exact bytes at any time. Nothing is permanently discarded, so real-world deployment recovers quality the raw benchmark leaves on the table. We publish the raw-model number because it's the honest, reproducible floor.
 
 To reproduce these SWE-bench Lite numbers yourself, see the [`eval_model/`](eval_model/) folder — one command runs it end to end (pull from source → compress → score).
+
+### Extractiveness, audited
+
+Compression is only safe for an *editing* agent if the model **selects spans rather than rewriting them** — a reworded function name breaks the next exact-match edit. That's a design commitment, so we measure it instead of asserting it: once over the training corpus, and again over output on data the model has never seen.
+
+| Measured over                              | Lines byte-identical | Markers | Novel | **Identifier / path / number tokens already in the input** |
+| ------------------------------------------ | :------------------: | :-----: | :---: | :--------------------------------: |
+| Distilled training corpus (236,152 lines)   |        82.3%         |  3.2%   | 14.5% |             **96.0%**              |
+| **Held-out SWE-bench Lite** (64,843 lines) ⭐ |      **92.2%**       |  0.4%   |  7.5% |           **96.2%**                |
+
+<sub>SWE-bench Lite is held out end to end — no instance of it appears in training — so the second row is the one that answers *does the copy behavior survive off-distribution?* There, the per-instance median token-copy rate is **97.0%** and **213 of 300** instances sit at or above 95%. The corpus row rises to **98.3%** once `assistant_thinking` is excluded, which is abstractive by rule (as are `meta_action` and long string literals). The residual is real rather than measurement noise — the teacher occasionally completes a name the input only partly contained (`Exception type: FailedParse` → `tatsu.exceptions.FailedParse:`), and the student learned that along with everything else. So the honest claim is *substantially* extractive — copy-first by construction, 96–98% copied in practice — alongside the narrower rule that does hold absolutely: **retained code lines and error strings are copied verbatim**. One caveat we state rather than round away: SWE-bench Lite instances are unseen, but some of its repositories are popular enough to also appear in the trajectories the corpus was distilled from, so this is unseen-*instance*, not unseen-*repository*, generalization.</sub>
+
+Both rows are reproducible:
+
+```bash
+# training corpus, by segment kind
+python eval/extractiveness.py
+
+# held out — re-derived offline from the cache a finished run leaves behind
+# (no GPU, no API calls), alongside the per-instance compression distribution
+python eval_model/audit_swebench.py \
+    --cache eval_model/_work/instances_chunk3000_paritok-4b-v1_latest_ln.jsonl
+```
+
+<sub>`extractiveness.py` reads the distilled corpus under `update/`, which isn't committed — regenerate it with the [data pipeline](data_pipeline/). `audit_swebench.py` needs only the resumable cache your own `eval_model/run.py` run already wrote.</sub>
 
 ### How Paritok compares
 
