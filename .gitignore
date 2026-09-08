@@ -53,6 +53,13 @@ training/scripts/
 # ── Eval: eval_model/ now holds the public SWE-bench quality-retained pipeline (tracked).
 #    Only its run artifacts are ignored (see eval_model/_work/ below). ──
 
+# ── eval/ is internal proxy metrics and stays local, with two exceptions: the
+#    audits the paper cites by path must be reproducible by a reader.
+#    (Pattern is eval/* rather than eval/ so git descends and sees the negations.) ──
+eval/*
+!eval/extractiveness.py
+!eval/design_claims_audit.py
+
 # ── Backup files ──
 *.trl-autogen-backup
 *.backup
