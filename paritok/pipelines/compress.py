@@ -357,13 +357,20 @@ class CompressionPipeline:
         if content.strip() and not (isinstance(compressed, str) and compressed.strip()):
             return self._skip(content, original_tokens, "empty_compression")
 
-        # 6. Effectiveness check — judged against what the MODEL actually saw
-        # (`model_text`, already de-padded), NOT the padded original. Otherwise merely
-        # stripping line-number padding would register as savings and let an echo /
-        # passthrough slip past the refusal gate as if it were a real compression.
-        compressed_tokens = count_tokens(compressed, enc)
+        # 6. Effectiveness check — judged on the REAL payload we return: the TAGGED
+        # [REF:id] output (the tag adds ~5-15 tokens), measured against what the MODEL
+        # saw (`model_text`, already de-padded), NOT the padded original — otherwise
+        # merely stripping line-number padding would register as savings and let an
+        # echo / passthrough slip past the gate. Build the tag here (no storage side
+        # effect yet) so the gate sees the exact tokens that go upstream: a compression
+        # that only clears the threshold BEFORE the tag is added is now refused (#51).
+        if source:
+            tagged = f"[REF:{sid} src={_sanitize_source(source)}] {compressed}"
+        else:
+            tagged = f"[REF:{sid}] {compressed}"
+        tagged_tokens = count_tokens(tagged, enc)
         model_tokens = count_tokens(model_text, enc)
-        savings_ratio = 1 - compressed_tokens / model_tokens if model_tokens > 0 else 0
+        savings_ratio = 1 - tagged_tokens / model_tokens if model_tokens > 0 else 0
         if savings_ratio < cfg.refusal_threshold:
             # A backend that echoes the input VERBATIM is a passthrough, not a weak
             # compression (a real compression always reflows / drops something). For the
@@ -371,23 +378,18 @@ class CompressionPipeline:
             # the original on gpu_available:false (#30). Record that as the reason instead
             # of "below_refusal_threshold", which reads like the content "didn't compress"
             # and sends debuggers to tune a threshold that has nothing to do with it.
+            # (Compare the UNtagged model output — the tag is always our own addition.)
             if compressed == model_text:
                 reason = "gpu_unavailable" if self.config.use_gpu_server else "backend_passthrough"
             else:
                 reason = "below_refusal_threshold"
             return self._skip(content, original_tokens, reason)
 
-        # 7. Store original + cache tagged result
-        # [REF:sid src=...] tag adds ~5–15 tokens overhead to compressed_tokens
+        # 7. Accepted — store the original and cache the tagged result (built above).
         self.storage.store(content)
         if source:
-            tagged = f"[REF:{sid} src={_sanitize_source(source)}] {compressed}"
             self.storage.set_shadow_for_path(source, sid)
-        else:
-            tagged = f"[REF:{sid}] {compressed}"
         self.storage.cache_compressed(sid, tagged)
-
-        tagged_tokens = count_tokens(tagged, enc)
 
         self._debug_dump({
             "ts": round(time.time(), 3),
