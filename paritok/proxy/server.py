@@ -118,7 +118,13 @@ class ProxyStats:
         comp = stats.compressed_tokens + tools_compressed_tokens
         self.total_original_tokens += orig
         self.total_compressed_tokens += comp
-        bucket = self.by_model.setdefault(model or "unknown", self._new_bucket())
+        # Key the per-model bucket by (model, input-length tier rate) so a >512K
+        # request is later priced at its long-context rate, not the standard one.
+        # Only MiniMax-M3 is length-tiered today; every other model returns one flat
+        # rate, so its bucket key is unchanged in practice.
+        from paritok.proxy.pricing import input_price_per_token
+        rate = input_price_per_token(model, input_tokens=orig)
+        bucket = self.by_model.setdefault((model or "unknown", rate), self._new_bucket())
         # Content (tool results / file reads / old history) is re-sent inside the
         # cacheable prefix every turn just like the tool block, so it's a cache WRITE
         # the first turn and a cache READ afterwards — price it the same way, not at
@@ -221,7 +227,12 @@ class ProxyStats:
         if expanded_tokens <= 0:
             return
         self.total_compressed_tokens += expanded_tokens
-        bucket = self.by_model.setdefault(model or "unknown", self._new_bucket())
+        # No per-request input length here → fold onto the model's standard-tier
+        # bucket (input_tokens omitted → standard rate). Expansions are rare; this
+        # only affects which tier bucket absorbs the (negative) saving.
+        from paritok.proxy.pricing import input_price_per_token
+        bucket = self.by_model.setdefault(
+            (model or "unknown", input_price_per_token(model)), self._new_bucket())
         cslot = "first" if bucket["content_first_orig"] == 0 else "rest"
         bucket[f"content_{cslot}_comp"] += expanded_tokens
 
@@ -241,11 +252,11 @@ class ProxyStats:
         conversation: its first turn is a cache WRITE (1.25x base), every turn after
         is a cache READ (Claude 0.1x, GPT-5 0.1x, ...) — each priced at its true
         multiplier rather than full list price."""
-        from paritok.proxy.pricing import (
-            input_price_per_token, cache_read_multiplier, CACHE_WRITE_MULT)
+        from paritok.proxy.pricing import cache_read_multiplier, CACHE_WRITE_MULT
         total = 0.0
-        for m, b in self.by_model.items():
-            rate = input_price_per_token(m)
+        # Buckets are keyed by (model, tier rate): the rate is already the request's
+        # input-length tier price, so use it directly (no second pricing lookup).
+        for (m, rate), b in self.by_model.items():
             cr = cache_read_multiplier(m)
             content_write = (b["content_first_orig"] - b["content_first_comp"]) * rate * CACHE_WRITE_MULT
             content_read = (b["content_rest_orig"] - b["content_rest_comp"]) * rate * cr

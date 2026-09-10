@@ -63,4 +63,6 @@ def test_expansion_without_prior_content_uses_first_slot():
     s = ProxyStats()
     s.record_expansion(1234, model="gemini")
     assert s.total_compressed_tokens == 1234
-    assert s.by_model["gemini"]["content_first_comp"] == 1234
+    # buckets are keyed by (model, tier rate); find gemini's regardless of tier
+    g = next(b for (m, _rate), b in s.by_model.items() if m == "gemini")
+    assert g["content_first_comp"] == 1234
