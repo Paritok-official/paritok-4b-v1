@@ -314,6 +314,7 @@ The gateway is independent of the upstream LLM — point the OpenAI path at **an
 ```bash
 paritok proxy --openai-url https://api.groq.com/openai        # Groq
 paritok proxy --openai-url https://openrouter.ai/api/v1       # OpenRouter
+paritok proxy --openai-url https://api.orcarouter.ai/v1       # OrcaRouter
 ```
 
 Then point your OpenAI-SDK agent at the proxy (`OPENAI_BASE_URL=http://127.0.0.1:8080`), set `OPENAI_API_KEY` to the provider's key, and use that provider's model names.
