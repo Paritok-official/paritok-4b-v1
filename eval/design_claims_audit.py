@@ -139,7 +139,7 @@ def claim_intent(recs):
     for ov, dropped, _, kind, lv in rows:
         cells[(kind, lv)].append((ov, dropped))
 
-    print(f"\nCONTROLLED for (kind, level) -- cells with n>=150:")
+    print("\nCONTROLLED for (kind, level) -- cells with n>=150:")
     print(f"{'kind':20s} {'lv':4s} {'n':>6s} {'low-ov drop':>12s} "
           f"{'high-ov drop':>13s} {'delta':>8s}")
     lo_w = hi_w = n_w = 0
@@ -153,7 +153,9 @@ def claim_intent(recs):
         hi = sum(1 for _, d in v[h:] if d) / (len(v) - h)
         total += 1
         right += hi < lo
-        lo_w += lo * len(v); hi_w += hi * len(v); n_w += len(v)
+        lo_w += lo * len(v)
+        hi_w += hi * len(v)
+        n_w += len(v)
         print(f"{kind:20s} {lv:4s} {len(v):>6,} {lo:>11.1%} {hi:>12.1%} {hi-lo:>+8.1%}")
 
     print(f"\nweighted: low-overlap {lo_w/n_w:.1%} -> high-overlap {hi_w/n_w:.1%} "

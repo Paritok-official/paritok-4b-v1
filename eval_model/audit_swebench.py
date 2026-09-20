@@ -141,12 +141,15 @@ def extractiveness(recs: list[dict]) -> None:
                 v += 1
             else:
                 nv += 1
-        verbatim += v; marker += m; novel += nv
+        verbatim += v
+        marker += m
+        novel += nv
 
         src = set(TOKEN.findall(original))
         out = TOKEN.findall(compressed)
         c = sum(1 for t in out if t in src)
-        copied += c; emitted += len(out)
+        copied += c
+        emitted += len(out)
         if out:
             per_inst.append((r["instance_id"], c / len(out), len(out)))
 
