@@ -23,9 +23,13 @@ _MIN_TOOLS_FOR_DISCOVERY = 5
 # An agent's core execution tools — its only means to actually DO anything (run a
 # command, edit a file). These must NEVER be stubbed by tool discovery: agents like
 # codex expose only ~9 tools and shell/exec is the one they can't work without.
+# Claude Code uses PascalCase names (Read/Write/Edit/Glob/Grep/Bash); matching is
+# case-sensitive, so they are listed explicitly — WHITELIST alone is not a floor
+# (it only prepends on code-hint queries, and freeze locks the first turn).
 _CORE_EXEC_TOOLS = frozenset({
     "shell", "shell_command", "local_shell", "container.exec", "exec", "bash",
     "apply_patch", "run_terminal_cmd", "str_replace_editor", "editor",
+    "Read", "Write", "Edit", "Glob", "Grep", "Bash",
 })
 
 # Common English stopwords to ignore during keyword matching
