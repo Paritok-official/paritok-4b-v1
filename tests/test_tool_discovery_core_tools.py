@@ -47,7 +47,7 @@ def _stub_predict_topk_frozen(monkeypatch, keep_names: list[str]):
     """Selector returns only the given names — never the protected core set."""
     import paritok.tool_topk as tk
 
-    def fake(session_id, user_message, tools):
+    def fake(session_id, user_message, tools, k_max=None):
         present = {_tool_name(t) for t in tools}
         return [n for n in keep_names if n in present]
 
