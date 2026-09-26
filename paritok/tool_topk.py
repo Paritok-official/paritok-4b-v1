@@ -211,14 +211,16 @@ class SessionFrozenSelector:
         self._sel = TopKToolSelector()
         self._frozen: dict[str, list[str]] = {}  # session_id -> frozen tool names
 
-    def select(self, session_id: str, user_message: str, tools: list[dict]) -> list[str]:
+    def select(self, session_id: str, user_message: str, tools: list[dict],
+               k_max: int | None = None) -> list[str]:
         present = {_tool_name(t) for t in tools}
         frozen = self._frozen.get(session_id)
         if frozen is not None:
             kept = [n for n in frozen if n in present]
             if kept:
                 return kept
-        chosen = self._sel.select_dynamic(user_message, tools, self.alpha, self.k_min, self.k_max)
+        limit = self.k_max if k_max is None else k_max
+        chosen = self._sel.select_dynamic(user_message, tools, self.alpha, self.k_min, limit)
         if len(tools) > self.k_min:
             self._frozen[session_id] = chosen
         return chosen
@@ -339,8 +341,10 @@ def predict_topk_dynamic(user_message: str, tools: Iterable[dict],
     return _default.select_dynamic(user_message, list(tools), alpha, k_min, k_max)
 
 
-def predict_topk_frozen(session_id: str, user_message: str, tools: Iterable[dict]) -> list[str]:
-    """Session-frozen selection (k_max=8). Same set for the whole session. Dropped
-    tools are recovered by returning their schema in a tool_result (cache-safe), never
-    by mutating this frozen set — re-emitting tools[] would bust the prompt cache."""
-    return _frozen_default.select(session_id, user_message, list(tools))
+def predict_topk_frozen(session_id: str, user_message: str, tools: Iterable[dict],
+                        k_max: int | None = None) -> list[str]:
+    """Session-frozen selection. Same set for the whole session (first call's k_max
+    wins). Default k_max=8 when omitted. Dropped tools are recovered by returning
+    their schema in a tool_result (cache-safe), never by mutating this frozen set —
+    re-emitting tools[] would bust the prompt cache."""
+    return _frozen_default.select(session_id, user_message, list(tools), k_max=k_max)

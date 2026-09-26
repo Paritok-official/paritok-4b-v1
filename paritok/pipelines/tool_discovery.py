@@ -202,7 +202,7 @@ class ToolDiscoveryPipeline:
             ) from e
 
         sid = session_id or query or "default"
-        keep_ordered = predict_topk_frozen(sid, query, tools)
+        keep_ordered = predict_topk_frozen(sid, query, tools, k_max=cfg.k_max)
         # Never stub an agent's core execution tool: codex/others expose only a handful
         # of tools and shell/exec is their ONLY way to act — if the embedding ranks it out
         # of top-k the agent is left unable to run anything (it falls back to asking the
