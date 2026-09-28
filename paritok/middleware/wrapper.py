@@ -615,9 +615,12 @@ def _compress_history(
             system_prompt=HISTORY_SUMMARY_PROMPT,
             upstream_model=upstream_model,
         )
-    except (ConnectionError, TimeoutError, ValueError) as e:
+    except Exception as e:  # noqa: BLE001 — any backend failure degrades to passthrough (#36)
         import logging
-        logging.getLogger("paritok").warning("History compression failed: %s", e)
+        logging.getLogger("paritok").warning(
+            "History compression failed (%s: %s); forwarding original history",
+            type(e).__name__, e,
+        )
         return messages
 
     stats.history_turns_compressed = len(old_messages)
