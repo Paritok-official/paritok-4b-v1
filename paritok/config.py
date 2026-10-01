@@ -141,6 +141,7 @@ class ParitokConfig:
     # true → route compression to the Paritok GPU server (needs an api_key).
     use_gpu_server: bool = False
 
+    upstream_timeout: float = 120.0
     compression: CompressionConfig = field(default_factory=CompressionConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
     tool_discovery: ToolDiscoveryConfig = field(default_factory=ToolDiscoveryConfig)
@@ -181,6 +182,8 @@ class ParitokConfig:
         config = cls()
         if "use_gpu_server" in data:
             config.use_gpu_server = bool(data["use_gpu_server"])
+        if "upstream_timeout" in data:
+            config.upstream_timeout = float(data["upstream_timeout"])
         if "compression" in data:
             config.compression = cls._merge_dataclass(config.compression, data["compression"])
         if "history" in data:
