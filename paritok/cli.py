@@ -14,6 +14,7 @@ _STARTER_YAML = """\
 #   false → self-host the open Paritok model locally (via Ollama).
 #   true  → use the Paritok GPU server (needs an API key from https://paritok.com).
 use_gpu_server: false
+upstream_timeout: 120.0
 
 # Paritok GPU server — only used when use_gpu_server: true.
 gpu_server:
