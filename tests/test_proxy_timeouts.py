@@ -1,4 +1,3 @@
-import pytest
 import httpx
 from unittest.mock import patch, MagicMock
 from paritok.config import ParitokConfig
