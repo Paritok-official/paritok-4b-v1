@@ -36,9 +36,15 @@ INPUT_USD_PER_MTOK: dict[str, float] = {
     "o4-mini": 1.10,
     "o3-mini": 1.10,
     "o3": 2.00,
-    # MiniMax. M2.7 is a single flat input rate; M3 is tiered on input length and
-    # lives in INPUT_TIERS below (so a >512K request is priced at the long-context
-    # rate instead of under-counting ~2x).
+    # MiniMax-M3.1-Flash has a flat rate, overriding the shorter M3 tier prefix.
+    # https://platform.minimax.io/docs/guides/pricing-paygo
+    "minimax-m3.1-flash": 0.15,
+    # Free gateway variants must not inherit the direct API price.
+    # https://openrouter.ai/api/v1/models
+    # https://opencode.ai/docs/zen/
+    "minimax-m3.1-flash:free": 0.0,
+    "minimax-m3.1-flash-free": 0.0,
+    # Preserve historical M2.7 estimates; M3 lives in INPUT_TIERS below.
     "minimax-m2.7": 0.30,
 }
 
@@ -75,8 +81,8 @@ CACHE_READ_MULT: dict[str, float] = {
     "gpt-4o": 0.5,
     "o4": 0.25,
     "o3": 0.25,
-    # MiniMax: cache read = 20% of base input. One family prefix is enough — every
-    # current MiniMax text model prices a cached input token at the same fraction.
+    # Flash: $0.015/M cache read / $0.15/M input = 10%; M3 and legacy stay at 20%.
+    "minimax-m3.1-flash": 0.1,
     "minimax": 0.2,
 }
 # Unknown model → assume the deepest discount (smallest saving) to avoid overstating.

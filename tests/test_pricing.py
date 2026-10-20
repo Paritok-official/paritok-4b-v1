@@ -52,6 +52,23 @@ def test_non_tiered_models_ignore_length(model, input_tokens, expected, matched)
     assert input_usd_per_mtok(model, input_tokens=input_tokens) == (expected, matched)
 
 
+@pytest.mark.parametrize("input_tokens", [None, 100_000, 600_000, 1_000_000])
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("MiniMax-M3.1-Flash", 0.15),
+        (" MINIMAX-M3.1-FLASH ", 0.15),
+        ("minimax/MiniMax-M3.1-Flash", 0.15),
+        ("minimax/minimax-m3.1-flash:free", 0.0),
+        ("minimax-m3.1-flash-free", 0.0),
+        ("opencode/minimax-m3.1-flash-free", 0.0),
+    ],
+)
+def test_flash_flat_price_overrides_m3_tiers(model, expected, input_tokens):
+    assert input_usd_per_mtok(model, input_tokens) == (expected, True)
+    assert input_price_per_token(model, input_tokens) == expected / 1_000_000
+
+
 def test_input_price_per_token_threads_length():
     assert input_price_per_token("MiniMax-M3", input_tokens=600_000) == 0.60 / 1_000_000
     assert input_price_per_token("MiniMax-M3", input_tokens=100_000) == 0.30 / 1_000_000
