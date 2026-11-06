@@ -35,6 +35,8 @@ compression:
   min_tokens: 512          # skip compression below this
   max_tokens: 50000        # skip compression above this
   refusal_threshold: 0.05  # must save at least 5% or keep the original
+  line_anchors: true       # tag kept def/class lines with their real range, e.g. "# L120-188 (partial)"
+  restore_indent: true     # give kept lines their real indentation (the model dedents mid-file slices)
 
 history:
   enabled: true
@@ -49,6 +51,7 @@ tool_discovery:
   k_max: 8                 # max tools kept in full schema
   adaptive: true           # coding tasks drop unselected MCP; MCP tasks stub them
   mcp_signal_threshold: 1.0
+  defer_under_tool_search: true  # Claude Code tool search: defer (not drop) unselected tools
 
 # Per-compression debug trace. Turn on to log every original→compressed pair.
 trace:
@@ -63,6 +66,12 @@ codex:
                            # Codex uses your OWN login (ChatGPT subscription or API key via
                            # `codex login`), like Claude Code — no key needed here. Add
                            # `model: <id>` only if you want to pin one (else Codex chooses).
+
+# Claude Code — keep its MCP tool search on (only tool names load; schemas are fetched
+# on demand) like a direct connection. Claude Code turns it off behind any proxy, so
+# paritok sets ENABLE_TOOL_SEARCH=true in ~/.claude/settings.json if you haven't set it.
+claude_code:
+  tool_search: true
 
 shadow_storage: memory     # "memory" | "redis" (redis persists [REF] across restarts; needs paritok[redis])
 """
@@ -90,6 +99,27 @@ def _maybe_write_codex_config(cfg: ParitokConfig, host: str, port: int) -> None:
     model_desc = cfg.codex.model or "Codex picks"
     click.echo(f"Codex: wrote {path} (model={model_desc}, {keymode}). "
                f"Just run `codex` in another shell.")
+
+
+def _maybe_enable_claude_tool_search(cfg: ParitokConfig) -> None:
+    """Keep Claude Code's tool search on through the proxy (see ClaudeCodeConfig)."""
+    if not cfg.claude_code.tool_search:
+        return
+    from paritok.proxy.claude_setup import KEY, ensure_tool_search
+    try:
+        status, path, value = ensure_tool_search(cfg.claude_code.settings_path)
+    except OSError as e:  # noqa: BLE001 — never block the proxy over this
+        click.echo(f"Claude Code: could not update settings.json ({e}); tool search stays "
+                   f"off behind the proxy unless you set {KEY}=true.", err=True)
+        return
+    if status == "enabled":
+        click.echo(f"Claude Code: set {KEY}=true in {path} so MCP tools stay deferred "
+                   f"(tool search), as on a direct connection.")
+    elif status == "already_set" and value != "true":
+        click.echo(f"Claude Code: {path} sets {KEY}={value}; leaving it as you set it.")
+    elif status == "unreadable":
+        click.echo(f"Claude Code: {path} isn't valid JSON; not touching it. Set {KEY}=true "
+                   f"there to keep tool search on behind the proxy.", err=True)
 
 
 @click.group()
@@ -334,9 +364,9 @@ def proxy(host, port, anthropic_url, openai_url, config_file, log_level):
         config_file = _DEFAULT_CONFIG_NAME
         click.echo(f"Using {_DEFAULT_CONFIG_NAME} from the current folder.")
 
-    _maybe_write_codex_config(
-        ParitokConfig.load(config_file) if config_file else ParitokConfig.load(),
-        host, port)
+    cfg = ParitokConfig.load(config_file) if config_file else ParitokConfig.load()
+    _maybe_write_codex_config(cfg, host, port)
+    _maybe_enable_claude_tool_search(cfg)
 
     run_proxy(
         host=host,
@@ -394,6 +424,7 @@ def up(host, port, anthropic_url, openai_url, config_file, registry_model, log_l
             )
 
     _maybe_write_codex_config(cfg, host, port)
+    _maybe_enable_claude_tool_search(cfg)
 
     from paritok.proxy.server import run_proxy
     run_proxy(

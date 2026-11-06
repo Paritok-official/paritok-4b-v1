@@ -136,6 +136,11 @@ _VAR_ASSIGN = re.compile(r"\$(\w+)\s*=\s*(?=['\"])")
 # `.Replace($a, $b)` / `-replace $a, $b` using variables.
 _VAR_REPLACE = re.compile(
     r"(?:\.replace\s*\(|-replace)\s*\$(\w+)\s*,\s*\$(\w+)", re.IGNORECASE)
+# Python in a heredoc (`python - <<'EOF'` — how Claude Code edits through Bash):
+# `old = """..."""` / `new = '''...'''` then `s.replace(old, new)`. Only plain triple-
+# quoted literals (no r/b/f prefix): their text is the file text verbatim, minus escapes.
+_PY_TRIPLE_ASSIGN = re.compile(r"(?m)^[ \t]*(\w+)\s*=\s*(\"\"\"|''')")
+_PY_VAR_REPLACE = re.compile(r"\.replace\s*\(\s*(\w+)\s*,\s*(\w+)\s*[,)]")
 
 
 def _scan_pair(s: str, i: int) -> tuple[ShellReplace | None, int]:
@@ -202,13 +207,39 @@ def parse_shell_replaces(command: str) -> list[ShellReplace]:
                 seen.add(ospan)
                 out.append(ShellReplace(ov, nv, ospan, nspan, oq, nq))
 
+    # Python triple-quoted variables: `old = """..."""` ... `s.replace(old, new)`.
+    pymap: dict[str, tuple[str, tuple[int, int], str]] = {}
+    for m in _PY_TRIPLE_ASSIGN.finditer(command):
+        q = m.group(2)
+        body_start = m.end()
+        close = command.find(q, body_start)
+        if close == -1:
+            continue
+        body = command[body_start:close]
+        if "\\" in body:
+            continue  # escapes would make the literal differ from the file text: abstain
+        pymap[m.group(1)] = (body, (m.end() - 3, close + 3), q)
+    for m in _PY_VAR_REPLACE.finditer(command):
+        a, b = m.group(1), m.group(2)
+        if a in pymap and b in pymap:
+            ov, ospan, oq = pymap[a]
+            nv, nspan, nq = pymap[b]
+            if ospan not in seen:
+                seen.add(ospan)
+                out.append(ShellReplace(ov, nv, ospan, nspan, oq, nq))
+
     out.sort(key=lambda sr: sr.old_span[0])
     return out
 
 
-def _safe_to_splice(real_old: str, real_new: str) -> bool:
-    """Only splice recovered literals that carry no quote/backslash/backtick, so wrapping
-    them in the original quote char can't corrupt the command."""
+def _safe_to_splice(real_old: str, real_new: str, quote: str = "'") -> bool:
+    """Only splice recovered literals that can't corrupt the command once wrapped in the
+    original quotes: for single-char quotes no quote/backslash/backtick at all; inside a
+    Python triple-quoted literal, quotes are fine — just not that triple quote, nor a
+    backslash (it would turn into an escape)."""
+    if len(quote) == 3:
+        return all(quote not in v and "\\" not in v and not v.endswith(quote[0])
+                   for v in (real_old, real_new))
     return not (_UNSAFE_SPLICE & set(real_old)) and not (_UNSAFE_SPLICE & set(real_new))
 
 
@@ -240,7 +271,8 @@ def rewrite_shell_command(command: str, resolve):
         real_old, real_new = rec
         if real_old == sr.old and real_new == sr.new:
             continue
-        if not _safe_to_splice(real_old, real_new):
+        if not (_safe_to_splice(real_old, real_new, sr.quote_old)
+                and _safe_to_splice(real_old, real_new, sr.quote_new)):
             continue
         edits.append((sr.old_span, f"{sr.quote_old}{real_old}{sr.quote_old}"))
         edits.append((sr.new_span, f"{sr.quote_new}{real_new}{sr.quote_new}"))

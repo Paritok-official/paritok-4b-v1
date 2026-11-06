@@ -30,7 +30,7 @@ from paritok.pipelines.virtual import (
     is_expand_call,
     is_virtual_tool_call,
 )
-from paritok.pipelines.tool_discovery import ToolDiscoveryPipeline
+from paritok.pipelines.tool_discovery import ToolDiscoveryPipeline, client_tool_search_active
 from paritok.storage import ShadowStorage, build_shadow_storage
 
 
@@ -51,6 +51,10 @@ class CompressionStats:
     cache_hits: int = 0
     tools_original: int = 0
     tools_kept: int = 0
+    # The client defers tool loading itself (tool search): discovery doesn't drop
+    # anything; tools it leaves out are marked defer_loading (names listed here).
+    client_tool_search: bool = False
+    tools_deferred: list = field(default_factory=list)
     history_turns_compressed: int = 0
     # A few real original→compressed pairs from this request, for the /stats
     # dashboard's before/after view (issue #42). Kept small; ProxyStats picks the
@@ -61,6 +65,12 @@ class CompressionStats:
     # Set only when discovery actually dropped tools. ProxyStats pairs it with the
     # request's real tool-schema token counts.
     tool_filter_sample: dict | None = None
+    # Per-tool_result decisions for this request ({tool_use_id, part, tool, input,
+    # original, cr}) — read by the opt-in agent-loop trace (proxy/agent_trace.py).
+    items: list = field(default_factory=list)
+    # Set when old history was folded into a summary this request:
+    # {turns, orig_tok, comp_tok, summary}.
+    history: dict | None = None
 
     def add_sample(self, original: str, cr, source: str | None = None) -> None:
         """Record one original→compressed pair — only genuine compressions (not a
@@ -175,8 +185,19 @@ class ParitokEngine:
         # (for the /stats tool-schema before/after sample, #42).
         offered_tool_names = [_tool_name(t) for t in tools] if tools else []
 
-        # 1. Tool Discovery — filter tool schemas
-        if tools and query and len(tools) > self.config.tool_discovery.top_k:
+        # 1. Tool Discovery — filter tool schemas. Skipped when the client already
+        # defers tool loading itself (Claude Code's tool search): filtering on top
+        # would drop tools it loads mid-session, and the saving is already realized.
+        if tools and client_tool_search_active(tools, messages):
+            stats.client_tool_search = True
+            stats.tools_original = stats.tools_kept = len(tools)
+            # Defer (never drop) what the semantic selection leaves out: the tool stays
+            # loadable through the client's own ToolSearch.
+            if self.config.tool_discovery.defer_under_tool_search and query:
+                tools, stats.tools_deferred = self.discovery.defer_unselected(
+                    tools, query, session_id=session_id)
+                stats.tools_kept = stats.tools_original - len(stats.tools_deferred)
+        elif tools and query and len(tools) > self.config.tool_discovery.top_k:
             result = self.discovery.filter_tools(tools, query, session_id=session_id)
             tools = result.tools
             stubbed_tools = result.stubbed_tools
@@ -212,7 +233,10 @@ class ParitokEngine:
             tools = _inject_virtual_tools(
                 tools,
                 has_compressed=True,
-                has_filtered=stats.tools_kept < stats.tools_original,
+                # Under client tool search, ToolSearch recovers deferred tools —
+                # no second discovery tool for the model to choose between.
+                has_filtered=(stats.tools_kept < stats.tools_original
+                              and not stats.client_tool_search),
             )
 
         # Record the tool-schema before/after (offered names → forwarded names, the
@@ -470,12 +494,11 @@ def _compress_messages(
             new_blocks = []
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
-                    source = _source_from_tool_use(
-                        tool_index.get(block.get("tool_use_id", ""))
-                    )
+                    tool_use = tool_index.get(block.get("tool_use_id", ""))
+                    source = _source_from_tool_use(tool_use)
                     block = _compress_block(
                         block, pipeline, stats, query=query, source=source,
-                        upstream_model=upstream_model,
+                        upstream_model=upstream_model, tool_use=tool_use,
                     )
                 new_blocks.append(block)
             result.append({**msg, "content": new_blocks})
@@ -492,27 +515,42 @@ def _compress_block(
     query: str | None = None,
     source: str | None = None,
     upstream_model: str = "",
+    tool_use: dict | None = None,
 ) -> dict:
     """Compress the content inside a tool_result block."""
     content = block.get("content", "")
 
+    def _note(part: int, text: str, cr) -> None:
+        stats.items.append({
+            "tool_use_id": block.get("tool_use_id"), "part": part,
+            "tool": (tool_use or {}).get("name"), "input": (tool_use or {}).get("input"),
+            "source": source, "original": text, "cr": cr,
+        })
+
+    tid = block.get("tool_use_id")
+    context = {"tool": (tool_use or {}).get("name"), "input": (tool_use or {}).get("input")}
     if isinstance(content, str) and content.strip():
         cr = pipeline.compress(content, query=query, source=source,
-                               upstream_model=upstream_model)
+                               upstream_model=upstream_model,
+                               item_key=f"{tid}#0" if tid else None, context=context)
         stats.record_result(cr)
         stats.add_sample(content, cr, source)
+        _note(0, content, cr)
         return {**block, "content": cr.compressed}
 
     if isinstance(content, list):
         new_content = []
-        for item in content:
+        for part, item in enumerate(content):
             if isinstance(item, dict) and item.get("type") == "text":
                 text = item.get("text", "")
                 if text.strip():
                     cr = pipeline.compress(text, query=query, source=source,
-                                           upstream_model=upstream_model)
+                                           upstream_model=upstream_model,
+                                           item_key=f"{tid}#{part}" if tid else None,
+                                           context=context)
                     stats.record_result(cr)
                     stats.add_sample(text, cr, source)
+                    _note(part, text, cr)
                     new_content.append({**item, "text": cr.compressed})
                 else:
                     new_content.append(item)
@@ -628,9 +666,12 @@ def _compress_history(
     # only the turn count was recorded, so history compression's tokens_saved was
     # invisible on /stats (both proxy paths route through here). old_text is what was
     # actually handed to the summarizer, so it's a conservative "original" measure.
-    stats.original_tokens += count_tokens(old_text)
-    stats.compressed_tokens += count_tokens(summary)
+    old_tok, summary_tok = count_tokens(old_text), count_tokens(summary)
+    stats.original_tokens += old_tok
+    stats.compressed_tokens += summary_tok
     stats.items_compressed += 1
+    stats.history = {"turns": len(old_messages), "orig_tok": old_tok,
+                     "comp_tok": summary_tok, "summary": summary}
 
     # Keeping only the recent turns can orphan a tool_result whose matching tool_use
     # lived in an old turn we just folded into the summary. The Anthropic API rejects

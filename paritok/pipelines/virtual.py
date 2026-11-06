@@ -11,17 +11,16 @@ EXPAND_TOOL_NAME = "read_original"
 
 EXPAND_CONTEXT_SCHEMA = {
     "name": EXPAND_TOOL_NAME,
+    # Neutral wording: calling the views "LOSSY" and a fresh Read "the same lossy view"
+    # made agents stop trusting Read altogether (see _REF_GUIDANCE in proxy/server.py),
+    # and "especially to EDIT it" contradicted the guidance that edits need no original.
     "description": (
-        "Return the EXACT, complete, verbatim original of a file or output that was "
-        "shortened to a `[REF:id src=path]` stub. The text next to a [REF:...] is a "
-        "LOSSY summary — reformatted, with blank lines / docstrings / some lines "
-        "dropped — so it does NOT match the real file byte-for-byte. "
-        "Whenever you need the precise contents of a [REF:...] file — especially to "
-        "EDIT it — call this with the id. "
-        "Do NOT try to recover the exact file by dumping it with Bash (cat / sed / "
-        "head / tail) or a fresh Read: those outputs get shortened again, so you get "
-        "the same lossy view. `read_original` is the ONLY way to get the true bytes — "
-        "it is instant, local, and exact."
+        "Return the complete original of a tool output shown condensed (it opens with "
+        "`[REF:id src=path]`; the condensed view keeps the parts that matter for the "
+        "current task). Use it when you need the whole original at once — for a few "
+        "lines, a Read of that range is enough. Edits don't need it: they are matched "
+        "to the file automatically. By default the original is shown for this step "
+        "only; set keep to true if you will need it again in later steps."
     ),
     "input_schema": {
         "type": "object",
@@ -33,7 +32,20 @@ EXPAND_CONTEXT_SCHEMA = {
                     "and before any space or ']'. Do NOT include the 'src=...' "
                     "portion. Example: for [REF:abc123 src=foo.py], pass 'abc123'."
                 ),
-            }
+            },
+            # loopbench r16: an agent writing notes about one file expanded it 18 turns
+            # in a row (the original is gone again the next turn). Kept originals are
+            # re-attached after the turn that asked (proxy/kept_originals.py).
+            "keep": {
+                "type": "boolean",
+                "description": (
+                    "true if you will need this original again in later steps — e.g. "
+                    "you will quote it, document it or work through it over several "
+                    "turns: it then stays in the conversation from your next step on. "
+                    "false (default) if you only need it for this step: it is not "
+                    "kept, which keeps the context smaller."
+                ),
+            },
         },
         "required": ["shadow_id"],
     },

@@ -88,6 +88,15 @@ class ProxyStats:
     # A rolling window of recent original→compressed pairs (biggest saving from
     # each request), truncated, for the /stats dashboard's before/after view (#42).
     recent_samples: list = field(default_factory=list)
+    # Upstream calls the client never sees: a read_original round the proxy answers
+    # itself, or a streamed reply thrown away to re-run the request. Each one re-sends
+    # the whole context, so they're a cost of the gateway, charged against the
+    # savings. record_expansion alone counted only the expanded text: in loopbench r13
+    # that was 0.5% of what the hidden calls actually sent (23.5k of 4.67M tokens).
+    hidden_rounds: int = 0
+    hidden_input_tokens: int = 0
+    hidden_output_tokens: int = 0
+    hidden_cost_usd: float = 0.0
     start_time: float = field(default_factory=time.time)
 
     @staticmethod
@@ -240,17 +249,34 @@ class ProxyStats:
         """Count one lossy Edit that edit_recovery rewrote to match the real file."""
         self.total_edits_recovered += 1
 
+    def record_hidden(self, usage: dict | None, model: str = "") -> None:
+        """Fold one hidden upstream call's real usage into the totals. Its input is
+        priced cache-aware like everything else here; its output tokens are counted
+        but not priced (pricing covers input only)."""
+        from paritok.proxy.pricing import cache_read_multiplier, CACHE_WRITE_MULT, input_price_per_token
+        u = usage or {}
+        new = u.get("input_tokens") or 0
+        write = u.get("cache_creation_input_tokens") or 0
+        read = u.get("cache_read_input_tokens") or 0
+        self.hidden_rounds += 1
+        self.hidden_input_tokens += new + write + read
+        self.hidden_output_tokens += u.get("output_tokens") or 0
+        rate = input_price_per_token(model, input_tokens=new + write + read)
+        self.hidden_cost_usd += rate * (new + CACHE_WRITE_MULT * write
+                                        + cache_read_multiplier(model) * read)
+
     @property
     def total_saved_tokens(self) -> int:
-        return self.total_original_tokens - self.total_compressed_tokens
+        """Input tokens saved, net of the hidden calls the gateway itself caused."""
+        return self.total_original_tokens - self.total_compressed_tokens - self.hidden_input_tokens
 
     @property
     def estimated_cost_saved_usd(self) -> float:
         """Cache-aware $ saved on the parts paritok touches, at each model's own
-        input rate (unknown → $3/M). The compressed *content* is new input, priced
-        at the base rate. The frozen *tool-schema* block is byte-stable across a
-        conversation: its first turn is a cache WRITE (1.25x base), every turn after
-        is a cache READ (Claude 0.1x, GPT-5 0.1x, ...) — each priced at its true
+        input rate (unknown → $3/M), net of the hidden upstream calls it caused.
+        Content and the frozen tool-schema block are both re-sent inside the cached
+        prefix: the first turn per model is a cache WRITE (1.25x base), every turn
+        after a cache READ (Claude 0.1x, GPT-5 0.1x, ...) — each priced at its true
         multiplier rather than full list price."""
         from paritok.proxy.pricing import cache_read_multiplier, CACHE_WRITE_MULT
         total = 0.0
@@ -263,7 +289,7 @@ class ProxyStats:
             tools_write = (b["tools_first_orig"] - b["tools_first_comp"]) * rate * CACHE_WRITE_MULT
             tools_read = (b["tools_rest_orig"] - b["tools_rest_comp"]) * rate * cr
             total += content_write + content_read + tools_write + tools_read
-        return round(total, 4)
+        return round(total - self.hidden_cost_usd, 4)
 
     def snapshot(self) -> dict:
         """The /stats payload — scoped to what paritok actually intervenes in."""
@@ -289,6 +315,12 @@ class ProxyStats:
             "tools_filtered": self.total_tools_filtered,
             "expansions": self.total_expansions,
             "edits_recovered": self.total_edits_recovered,
+            # Hidden upstream calls (read_original rounds, re-runs): already deducted
+            # from tokens_saved and estimated_cost_saved_usd above.
+            "hidden_rounds": self.hidden_rounds,
+            "hidden_input_tokens": self.hidden_input_tokens,
+            "hidden_output_tokens": self.hidden_output_tokens,
+            "hidden_cost_usd": round(self.hidden_cost_usd, 4),
             # Passthrough tokens paritok did NOT compress (below-min-tokens, backend
             # error/timeout, gpu-unavailable, ...), excluded from the ratio above and
             # reported separately, by reason.
@@ -638,12 +670,21 @@ def create_app(
         ParitokEngine,
         _inject_virtual_tools,
     )
-    from paritok.pipelines.edit_recovery import recover_edit, strip_read_line_numbers
+    from paritok.pipelines.edit_recovery import (
+        reconcile_edit,
+        recover_edit,
+        strip_read_line_numbers,
+    )
     from paritok.pipelines.codex_edit_recovery import (
+        rewrite_shell_command,
         rewrite_function_call_arguments,
         rewrite_tool_call_input,
     )
     from paritok.pipelines.virtual import is_expand_call, is_virtual_tool_call
+    from paritok.pipelines.file_history import FileHistory
+    from paritok.proxy.kept_originals import KeptOriginals, turn_fingerprint
+    from paritok.pipelines.line_anchors import strip_anchors
+    from paritok.proxy.agent_trace import AgentTrace, RequestTrace, content_tokens
     from paritok.proxy.adapters import anthropic as anth_adapter
     from paritok.proxy.adapters import openai as oai_adapter
     from paritok.proxy.adapters import responses as resp_adapter
@@ -669,13 +710,21 @@ def create_app(
     # Initialize
     config = ParitokConfig.load(config_path) if config_path else ParitokConfig()
     engine = ParitokEngine(config)
+    kept_originals = KeptOriginals()
     proxy_stats = ProxyStats()
+    # Opt-in agent-loop trace (PARITOK_AGENT_TRACE=<path>); None = off, zero cost.
+    agent_trace = AgentTrace.from_env()
     if http_client is None:
         http_client = httpx.AsyncClient(timeout=config.upstream_timeout)
 
     def _tools_tokens(tools) -> int:
-        """Token size of a tool-schema list (0 when there are none)."""
-        return count_tokens(json.dumps(tools)) if tools else 0
+        """Token size of the tool schemas the upstream actually puts in the prompt
+        (0 when there are none). Deferred tools (`defer_loading: true`, Claude Code's
+        tool search) are left out: they aren't loaded into context, so counting their
+        full schemas would credit paritok with savings that never cost anything."""
+        billed = [t for t in tools or []
+                  if not (isinstance(t, dict) and t.get("defer_loading"))]
+        return count_tokens(json.dumps(billed)) if billed else 0
 
     # Fire-and-forget background tasks (hosted tool-savings reports). Kept in a
     # set so they aren't garbage-collected before they finish.
@@ -799,10 +848,51 @@ def create_app(
         # freezes the whole event loop for the entire compression, stalling health checks,
         # count_tokens, and every other in-flight session until it returns.
         client_tools = parsed.tools  # the caller's full tool schemas, pre-stub
+        rt = RequestTrace(agent_trace, agent_trace.next_rid()) if agent_trace else None
+        client_messages = parsed.messages
+        _t_compress = time.time()
         parsed.messages, parsed.tools, stats, stubbed = await asyncio.to_thread(
             engine.process_request, parsed.messages, parsed.tools,
             upstream_model=body.get("model", ""),
         )
+        from paritok.middleware.wrapper import _conversation_id
+        conv = _conversation_id(client_messages)
+        # Originals the agent asked to keep (read_original keep=true), re-attached where
+        # they were first placed — added input the gateway caused, so counted against it.
+        parsed.messages, kept_tok = kept_originals.attach(
+            conv, parsed.messages, count=lambda t: count_tokens(t, body.get("model", "")))
+        stats.compressed_tokens += kept_tok
+        keep_ctx = {"conv": conv, "n": len(parsed.messages)}
+        if rt and kept_tok:
+            agent_trace.emit("kept", rid=rt.rid, tokens=kept_tok, refs=kept_originals.refs(conv))
+        if rt:
+            _m = body.get("model", "")
+            agent_trace.on_request(
+                rt.rid, conv=conv, model=_m,
+                stream=bool(parsed.stream), messages=client_messages,
+                client_tools=client_tools, forwarded_tools=parsed.tools, stubbed=stubbed,
+                stats=stats, compress_s=time.time() - _t_compress,
+                msg_tokens_in=content_tokens(client_messages, lambda t: count_tokens(t, _m)),
+                msg_tokens_out=content_tokens(parsed.messages, lambda t: count_tokens(t, _m)),
+            )
+        # What the agent read (verbatim or compressed) and wrote per file, replayed from
+        # its own messages — so edit recovery maps onto the file as it is NOW, not onto a
+        # read the agent has since edited.
+        history = FileHistory(client_messages, {
+            it["tool_use_id"]: it["cr"].shadow_id for it in stats.items
+            if it.get("tool_use_id") and it.get("cr") is not None
+            and (not it["cr"].metadata.get("skipped")
+                 or it["cr"].metadata.get("reason") == "already_compressed")})
+        # The real (uncompressed) file reads in this conversation, for recovering a
+        # Bash literal replace the model authored from a summary: (path, current text).
+        read_bodies = []
+        for it in stats.items:
+            if it.get("tool") in ("Read", "NotebookRead") and it.get("original"):
+                path = (it.get("input") or {}).get("file_path") or it.get("source") or ""
+                now = history.current(path, strip_read_line_numbers(it["original"]),
+                                      it.get("tool_use_id"))
+                if now is not None:
+                    read_bodies.append((path, now))
 
         tools_orig_tok = _tools_tokens(client_tools)
         tools_comp_tok = _tools_tokens(parsed.tools)
@@ -822,6 +912,14 @@ def create_app(
         # never needs to own the tool — this works for Claude Code, etc.
         if parsed.tools and any(is_expand_call(t.get("name", "")) for t in parsed.tools):
             parsed.system = _prepend_ref_guidance(parsed.system)
+        # Tools paritok deferred aren't visible to the model (only loaded on demand),
+        # so name them once, or the model can't know to search for them. The list is
+        # frozen per session, so this text is byte-stable (cache-safe).
+        if stats.tools_deferred:
+            parsed.system = _append_system_text(parsed.system, (
+                "These tools are deferred to save context. Load one with ToolSearch "
+                "(query \"select:<name>\") before calling it: "
+                + ", ".join(stats.tools_deferred) + "."))
 
         # Forward
         headers = _forward_headers(request)
@@ -861,19 +959,26 @@ def create_app(
                 _fh.write(f"msgs={_nmsg} n_tools={len(_tn)} tools_tok={_ttok} sys_tok={_systok} msg_tok={_msgtok} dups={_dups} virtual={_virt}\n")
 
         if parsed.stream:
-            return await _stream_anthropic(url, headers, forward_body, stubbed, _finalize)
+            return await _stream_anthropic(url, headers, forward_body, stubbed, _finalize, rt,
+                                           read_bodies, history, keep_ctx)
         try:
             final_body, status_code, resp_headers = await _anthropic_resolve(
-                url, headers, forward_body, stubbed
+                url, headers, forward_body, stubbed, rt, keep_ctx=keep_ctx
             )
         except httpx.ConnectError as e:
             _finalize(502)
+            if rt:
+                rt.final(502, {"error": str(e)})
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
             _finalize(504)
+            if rt:
+                rt.final(504, {"error": "upstream timeout"})
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
         _finalize(status_code)
-        final_body = _recover_edits(final_body)
+        final_body = _recover_edits(final_body, rt, read_bodies, history)
+        if rt:
+            rt.final(status_code, final_body)
         return JSONResponse(content=final_body, status_code=status_code, headers=resp_headers)
 
     # ── OpenAI handler ──
@@ -920,7 +1025,8 @@ def create_app(
             if not (text and text.strip()):
                 continue
             cr = engine.pipeline.compress(text, query=query,
-                                          upstream_model=body.get("model", ""))
+                                          upstream_model=body.get("model", ""),
+                                          item_key=msg.get("tool_call_id"))
             if not cr.metadata.get("skipped"):
                 parsed.messages[i] = {**msg, "content": rewrap(cr.compressed)}
                 stats.original_tokens += cr.original_tokens
@@ -1159,9 +1265,11 @@ def create_app(
             logger.exception("count_tokens: compression failed; counting raw payload")
             msgs, tools, system = (body.get("messages", []), body.get("tools"),
                                    body.get("system"))
+        # Deferred tools (defer_loading) aren't in the model's context — don't count them.
+        loaded = [t for t in tools or [] if not (isinstance(t, dict) and t.get("defer_loading"))]
         n = (count_tokens(json.dumps(msgs), model)
              + (count_tokens(json.dumps(system), model) if system else 0)
-             + (count_tokens(json.dumps(tools), model) if tools else 0))
+             + (count_tokens(json.dumps(loaded), model) if loaded else 0))
         return JSONResponse({"input_tokens": n})
 
     # ── Stats / Health ──
@@ -1280,32 +1388,41 @@ def create_app(
     _MAX_RESOLVE_ROUNDS = 5
     _STREAM_HEADERS = {"cache-control": "no-cache", "x-paritok-proxy": "true"}
     _VIRTUAL_MARKERS = (b"read_original", b"expand_context", b"gateway_search_tools")
+    # Neutral on purpose. Telling the agent its views are "lossy", "do NOT match the real
+    # file" and that "a fresh Read gives the same lossy view" (this text and the
+    # read_original description, until 2026-10-19) changed how it worked, not just what it
+    # re-read (loopbench, all ON vs OFF runs): Sonnet stopped using Read after its first
+    # summary and read every file — mostly ones never summarized — with `sed`, one range
+    # per turn (12.3 Bash reads/run vs 1.5 direct; ~9 extra single-call turns/run), and
+    # Opus ran twice the tests and read its own edits back more often.
     _REF_GUIDANCE = (
-        "A few earlier tool outputs here were shrunk to save context. Shrunk text opens "
-        "with a marker like `[REF:<id> src=<path>]` and is followed by a lossy summary "
-        "(reformatted, with blank lines / docstrings / some lines dropped) that does NOT "
-        "match the real file byte-for-byte. When the summary already covers the step, keep "
-        "going with it. "
-        "To EDIT such a file, just write the Edit straight from the summary — your "
-        "`old_string` does NOT need to match the real bytes exactly. The system "
-        "automatically reconciles your edit against the true file (restoring dropped "
-        "docstrings, comments and exact whitespace), so it applies on the first try. "
-        "Do NOT call read_original merely to make an edit. "
-        "Only call `read_original` with the `<id>` when you must study the exact untouched "
-        "bytes for their own sake (not to edit). "
-        "Do NOT try to reconstruct the file by dumping it with Bash (cat / sed / head / "
-        "tail) or a fresh Read — those outputs get shrunk again, so you just get the same "
-        "lossy view."
+        "Some earlier tool outputs here are shown condensed to save context. A condensed "
+        "output opens with a marker like `[REF:<id> src=<path>]` and keeps the parts that "
+        "matter for the current task; unrelated lines, docstrings and blank lines are left "
+        "out. What it shows is accurate: work from it. "
+        "A kept def/class line ends with `# L<start>-<end>`: that block's line range in the "
+        "file (`+` = it continues past what was read, `(partial)` = some of its lines were "
+        "left out). If you need lines that were left out, Read those ranges, asking for "
+        "every range you need in parallel in one turn; `read_original` with the `<id>` "
+        "returns the whole original at once (with keep: true it stays for later steps). "
+        "To edit, write the Edit from what you see: it is matched to the file "
+        "automatically (left-out docstrings, comments and whitespace are kept), so it "
+        "applies on the first try. There is no need to fetch the original first."
     )
 
-    def _prepend_ref_guidance(system):
-        """Fold the [REF:] guidance into whatever system prompt the caller supplied."""
-        hint = {"type": "text", "text": _REF_GUIDANCE}
+    def _append_system_text(system, text: str):
+        """Append a text block after whatever system prompt the caller supplied
+        (always after, never before — see prepend-causes-429 in _prepend_ref_guidance)."""
+        hint = {"type": "text", "text": text}
         if isinstance(system, str):
-            return f"{system}\n\n{_REF_GUIDANCE}"
+            return f"{system}\n\n{text}"
         if isinstance(system, list):
             return [*system, hint]
         return [hint]  # None, or an unexpected shape
+
+    def _prepend_ref_guidance(system):
+        """Fold the [REF:] guidance into whatever system prompt the caller supplied."""
+        return _append_system_text(system, _REF_GUIDANCE)
 
     def _relay_headers(resp) -> dict:
         drop = {"content-length", "content-encoding", "transfer-encoding"}
@@ -1352,7 +1469,16 @@ def create_app(
 
     _EDIT_TOOLS = ("Edit", "str_replace", "str_replace_editor")
 
-    def _recover_edits(message: dict) -> dict:
+    def _old_in_compressed(sids, old: str) -> bool:
+        """Does the model's old_string appear in the compressed view it was shown?
+        True + an unrecoverable edit = the Edit was authored from the lossy summary."""
+        for sid in sids:
+            tag = engine.storage.get_cached_compressed(sid)
+            if tag and (old in tag or old in strip_read_line_numbers(tag)):
+                return True
+        return False
+
+    def _recover_edits(message: dict, rt=None, read_bodies=None, history=None) -> dict:
         """Fix Edit tool calls the model authored against a lossy [REF] summary.
 
         The model's `old_string` reflects the compressed view (collapsed signature,
@@ -1360,13 +1486,23 @@ def create_app(
         exact-match Edit would fail and it would re-read. Map it back onto the true
         original (from the shadow store) and rewrite old_string/new_string so the Edit
         applies first try, preserving the docstrings/comments/formatting the summary
-        dropped. On any ambiguity we leave the call untouched (the model can expand)."""
+        dropped. On any ambiguity we leave the call untouched (the model can expand).
+
+        `history` (FileHistory) keeps this to edits authored from a summary, against the
+        file as it is now: an old_string the agent read verbatim or wrote itself is left
+        alone, and a stored read is first brought up to date with the agent's later
+        edits — or skipped when that can't be done exactly."""
         blocks = message.get("content")
         if not isinstance(blocks, list):
             return message
         for b in blocks:
-            if not (isinstance(b, dict) and b.get("type") == "tool_use"
-                    and b.get("name") in _EDIT_TOOLS):
+            if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                continue
+            if b.get("name") in _SHELL_TOOLS:
+                _recover_shell_edit(b, rt, read_bodies)
+                continue
+            _strip_written_anchors(b)
+            if b.get("name") not in _EDIT_TOOLS:
                 continue
             inp = b.get("input") or {}
             fp = inp.get("file_path") or inp.get("path")
@@ -1378,27 +1514,110 @@ def create_app(
             # so fall back to an earlier, fuller read of the same file.
             sids = engine.storage.get_shadows_for_path(fp)
             if not sids:
+                if rt:
+                    rt.edit(tool_use_id=b.get("id"), file_path=fp, outcome="no_shadow",
+                            model_old=old, model_new=new, n_reads=0, old_in_compressed=None)
                 continue
+            if history is not None and history.saw_verbatim(fp, old):
+                # Text the agent read uncompressed or wrote itself: not from a summary.
+                if rt:
+                    rt.edit(tool_use_id=b.get("id"), file_path=fp, outcome="seen_verbatim",
+                            model_old=old, model_new=new, n_reads=len(sids),
+                            old_in_compressed=None)
+                continue
+            # What the model was shown for this file (to tell hidden text from seen text).
+            views = [strip_read_line_numbers(v) for v in
+                     (engine.storage.get_cached_compressed(s) for s in sids) if v]
             out = None
             already = False
+            stale = 0
             for sid in sids:
                 original = engine.storage.retrieve(sid)
                 if not original:
                     continue
                 clean = strip_read_line_numbers(original)
+                if history is not None:
+                    # The file as it is now: this read plus the agent's later edits.
+                    clean = history.current(fp, clean, history.read_of(sid))
+                    if clean is None:
+                        stale += 1
+                        continue
                 if old in clean:
+                    # Matches the file, but the summary can still break it: a docstring
+                    # it hid gets duplicated, or extra lines land at its indentation.
                     already = True
-                    break  # this read already matches the file; nothing to fix
+                    out = reconcile_edit(old, new, clean, views)
+                    break
                 out = recover_edit(old, new, clean)
                 if out is not None:
                     break
-            if already or out is None:
+            if rt:
+                rt.edit(tool_use_id=b.get("id"), file_path=fp,
+                        outcome=("matched_fixed" if already and out else
+                                 "matches_original" if already else
+                                 "recovered" if out else
+                                 "stale_read" if stale and stale == len(sids) else
+                                 "unrecoverable"),
+                        model_old=old, model_new=new, n_reads=len(sids),
+                        old_in_compressed=_old_in_compressed(sids, old),
+                        client_old=out[0] if out else None,
+                        client_new=out[1] if out else None)
+            if out is None:
                 continue
             client_old, client_new = out
             b["input"] = {**inp, "old_string": client_old, "new_string": client_new}
             proxy_stats.record_edit_recovery()
-            logger.info("edit_recovery: rewrote Edit old_string for %s to match the file", fp)
+            logger.info("edit_recovery: rewrote Edit for %s to match the file", fp)
         return message
+
+    _WRITE_FIELDS = {"Edit": ("old_string", "new_string"), "str_replace": ("old_string", "new_string"),
+                     "str_replace_editor": ("old_str", "new_str"), "Write": ("content",),
+                     "NotebookEdit": ("new_source",)}
+
+    def _strip_written_anchors(block: dict) -> None:
+        """The view carries line-range anchors ("def f():  # L12-40"); an agent that copies
+        such a line into an edit must not write the anchor into the user's file."""
+        name, inp = block.get("name"), block.get("input") or {}
+        fields = _WRITE_FIELDS.get(name, ())
+        new = {k: strip_anchors(inp[k]) for k in fields if isinstance(inp.get(k), str)}
+        if name == "MultiEdit" and isinstance(inp.get("edits"), list):
+            new["edits"] = [{**e, **{k: strip_anchors(e[k]) for k in ("old_string", "new_string")
+                                     if isinstance(e.get(k), str)}}
+                            for e in inp["edits"] if isinstance(e, dict)]
+        if any(new[k] != inp.get(k) for k in new):
+            block["input"] = {**inp, **new}
+
+    _SHELL_TOOLS = ("Bash", "PowerShell")
+    _PATH_TOKEN = re.compile(r"[\w./\\:-]+\.[A-Za-z0-9]{1,6}")
+
+    def _recover_shell_edit(block: dict, rt, read_bodies) -> None:
+        """Claude Code analog of the codex shell recovery: the agent edits through Bash
+        with a literal replace (`python - <<EOF ... s.replace(old, new)`), authored from
+        the summary, so `old` misses the real file (e.g. shifted indentation). Rewrite the
+        literals against the real reads of the files the command names."""
+        inp = block.get("input") or {}
+        command = inp.get("command")
+        if not (isinstance(command, str) and ".replace" in command.lower() and read_bodies):
+            return
+
+        def _norm(p: str) -> str:
+            return (p or "").replace("\\", "/").lower().lstrip("./")
+
+        def resolve(cmd: str):
+            names = {_norm(t) for t in _PATH_TOKEN.findall(cmd)}
+            return [body for path, body in read_bodies
+                    if any(n and _norm(path).endswith(n) for n in names)]
+
+        new_cmd, n = rewrite_shell_command(command, resolve)
+        if rt:
+            rt.edit(tool_use_id=block.get("id"), file_path="(shell)",
+                    outcome="recovered" if n else "shell_untouched", model_old=command,
+                    model_new="", n_reads=len(read_bodies), old_in_compressed=None,
+                    client_old=new_cmd if n else None)
+        if n:
+            block["input"] = {**inp, "command": new_cmd}
+            proxy_stats.record_edit_recovery()
+            logger.info("edit_recovery: rewrote %d literal replace(s) in a shell command", n)
 
     def _recover_codex_edits(reply: dict, originals: list[str]) -> dict:
         """Codex analog of `_recover_edits` for the Responses API. Codex has no Edit tool;
@@ -1442,8 +1661,9 @@ def create_app(
                 logger.info("codex edit_recovery: rewrote a %s edit to match the file", itype)
         return reply
 
-    def _parse_sse_to_message(raw: bytes) -> dict:
-        """Reassemble a finished Anthropic message from a buffered SSE byte stream."""
+    def _parse_sse_to_message(raw: bytes, strict: bool = False) -> dict:
+        """Reassemble a finished Anthropic message from a buffered SSE byte stream.
+        `strict` raises instead of leaving a tool_use input whose JSON didn't parse."""
         msg: dict = {"content": []}
         blocks: dict = {}
         frag: dict = {}
@@ -1486,7 +1706,8 @@ def create_app(
                     try:
                         blocks[i]["input"] = json.loads(frag[i])
                     except Exception:
-                        pass
+                        if strict:
+                            raise
             elif t == "message_delta":
                 d = ev.get("delta", {}) or {}
                 msg["stop_reason"] = d.get("stop_reason")
@@ -1497,40 +1718,121 @@ def create_app(
         msg["content"] = [blocks[i] for i in sorted(blocks)]
         return msg
 
-    async def _anthropic_resolve(url, headers, body, stubbed_tools):
+    _RESOLVABLE_BLOCKS = {"text", "thinking", "redacted_thinking", "tool_use"}
+
+    def _stream_reply_for_resolve(raw: bytes, status: int) -> dict | None:
+        """The buffered streamed reply as a message the resolve loop can continue from,
+        or None when it can't be reassembled exactly: a non-200, an unfinished stream, a
+        block kind the reassembly doesn't model (server tools), a tool input that isn't
+        valid JSON, or a thinking block without its signature (the API rejects it)."""
+        if status != 200:
+            return None
+        try:
+            msg = _parse_sse_to_message(raw, strict=True)
+        except Exception:  # noqa: BLE001 — anything unparseable falls back to a re-run
+            return None
+        blocks = msg.get("content")
+        if not (msg.get("stop_reason") and isinstance(blocks, list) and blocks):
+            return None
+        for b in blocks:
+            kind = b.get("type")
+            if kind not in _RESOLVABLE_BLOCKS:
+                return None
+            if kind == "tool_use" and not (b.get("id") and isinstance(b.get("input"), dict)):
+                return None
+            if kind == "thinking" and not b.get("signature"):
+                return None
+        return msg
+
+    async def _anthropic_resolve(url, headers, body, stubbed_tools, rt=None, first=None,
+                                 first_status=200, first_elapsed=0.0, keep_ctx=None):
         """Loop the upstream (non-streaming), answering virtual tool calls ourselves,
-        until a plain turn returns. Yields (message, status_code, response_headers)."""
+        until a plain turn returns. Yields (message, status_code, response_headers).
+
+        `first` is a reply already in hand (the client's streamed turn, buffered): the
+        loop continues from it instead of asking the model the same request again.
+        `keep_ctx` ({conv, n}) registers originals expanded with keep=true, anchored to
+        what the client sends after the turn this returns (see kept_originals)."""
         body = {**body, "stream": False}
         model = body.get("model", "")
         thread = list(body.get("messages", []))
         served_refs: set[str] = set()
-        reply, resp = {}, None
+        reply, resp, status = {}, None, 502
+        keeps: list[str] = []
+
+        def _virtual_rows(calls):
+            return [{"id": c.get("id"), "name": c.get("name"),
+                     "ref": _shadow_ref(c.get("input", {}) or {}),
+                     "query": (c.get("input", {}) or {}).get("query"),
+                     "keep": bool((c.get("input", {}) or {}).get("keep"))} for c in calls]
+
+        def _finish(msg):
+            """Register the kept originals against the turn being returned."""
+            if keep_ctx and keeps:
+                anchor = next((b.get("id") for b in msg.get("content") or []
+                               if isinstance(b, dict) and b.get("type") == "tool_use"
+                               and not is_virtual_tool_call(b.get("name", ""))), None)
+                # Without a tool call to anchor on, the turn itself identifies where the
+                # original goes: the message after this assistant reply, in this session.
+                fp = None if anchor else turn_fingerprint(msg.get("content"))
+                for ref in keeps:
+                    text = engine.storage.retrieve(ref)
+                    if text:
+                        kept_originals.add(keep_ctx["conv"], ref, text,
+                                           engine.storage.get_path_for_shadow(ref),
+                                           anchor, keep_ctx["n"] + 1, anchor_fp=fp)
+            return msg
 
         for _round in range(_MAX_RESOLVE_ROUNDS):
             body["messages"] = thread
-            resp = await http_client.post(url, headers=headers, json=body)
-            try:
-                reply = resp.json()
-            except Exception:
-                return {"error": f"Upstream returned invalid JSON. Status: {resp.status_code}"}, 502, {}
+            _t_up = time.time()
+            if _round == 0 and first is not None:
+                reply, resp, status, kind = first, None, first_status, "stream"
+                _t_up -= first_elapsed
+            else:
+                resp = await http_client.post(url, headers=headers, json=body)
+                status, kind = resp.status_code, "resolve"
+                try:
+                    reply = resp.json()
+                except Exception:
+                    if rt:
+                        rt.upstream(rnd=_round, kind=kind, status=status,
+                                    message={"error": "invalid JSON"},
+                                    elapsed_s=time.time() - _t_up, outcome="error")
+                    return {"error": f"Upstream returned invalid JSON. Status: {status}"}, 502, {}
 
             pending = anth_adapter.find_virtual_tool_uses(reply)
             if not pending:
-                return reply, resp.status_code, _relay_headers(resp)
+                if rt:
+                    rt.upstream(rnd=_round, kind=kind, status=status,
+                                message=reply, elapsed_s=time.time() - _t_up, outcome="final")
+                return _finish(reply), status, _relay_headers(resp)
 
             # A real, client-side tool call in the same turn: yield control so the
             # client can run it (with the virtual ones concealed).
             if any(isinstance(b, dict) and b.get("type") == "tool_use"
                    and not is_virtual_tool_call(b.get("name", ""))
                    for b in reply.get("content", [])):
-                return _conceal_virtual_calls(reply), resp.status_code, _relay_headers(resp)
+                if rt:
+                    # The virtual calls in this turn are dropped UNANSWERED.
+                    rt.upstream(rnd=_round, kind=kind, status=status,
+                                message=reply, elapsed_s=time.time() - _t_up, outcome="final",
+                                concealed_unanswered=_virtual_rows(pending))
+                return _finish(_conceal_virtual_calls(reply)), status, _relay_headers(resp)
 
             thread = [*thread, {"role": "assistant", "content": reply.get("content", [])}]
             results, fresh = [], 0
+            vrows = []
             for call in pending:
                 args = call.get("input", {}) or {}
                 ref = _shadow_ref(args)
+                vrow = _virtual_rows([call])[0]
+                vrows.append(vrow)
+                if (is_expand_call(call.get("name", "")) and args.get("keep") is True
+                        and ref and ref not in keeps):
+                    keeps.append(ref)
                 if ref and ref in served_refs:
+                    vrow["dup"] = True
                     out = ("[That reference was already expanded in this turn; "
                            "use the content provided just above.]")
                 else:
@@ -1548,6 +1850,10 @@ def create_app(
                     out = _virtual_call_output(
                         engine.resolve_virtual_call(call.get("name", ""), args,
                                                     stubbed_tools=stubbed_tools))
+                    if rt:
+                        vrow["out_tok"] = count_tokens(out, model)
+                        vrow["src"] = engine.storage.get_path_for_shadow(ref) if ref else None
+                        vrow["out_head"] = out[:300]
                     if is_expand_call(call.get("name", "")):
                         proxy_stats.record_expansion(count_tokens(out, model), model)
                         import os as _dbgos  # TEMP expand-diagnostic; not committed
@@ -1565,12 +1871,18 @@ def create_app(
                 results.append({"type": "tool_result",
                                 "tool_use_id": call.get("id", ""), "content": out})
             thread = [*thread, {"role": "user", "content": results}]
+            if rt:
+                # A hidden round: the client never sees this reply; the proxy answers
+                # its virtual calls and POSTs again (unless nothing fresh was served).
+                rt.upstream(rnd=_round, kind=kind, status=status,
+                            message=reply, elapsed_s=time.time() - _t_up,
+                            outcome="final" if fresh == 0 else "hidden", virtual=vrows)
 
             if fresh == 0:  # only repeats of already-served refs — stop looping
-                return _conceal_virtual_calls(reply), resp.status_code, _relay_headers(resp)
+                return _finish(_conceal_virtual_calls(reply)), status, _relay_headers(resp)
+            proxy_stats.record_hidden(reply.get("usage"), model)  # the client never sees it
 
-        return (_conceal_virtual_calls(reply),
-                resp.status_code if resp is not None else 502, _relay_headers(resp))
+        return _finish(_conceal_virtual_calls(reply)), status, _relay_headers(resp)
 
     async def _emit_once(payload: bytes):
         yield payload
@@ -1579,7 +1891,20 @@ def create_app(
         return StreamingResponse(_emit_once(payload), media_type="text/event-stream",
                                  status_code=status, headers=_STREAM_HEADERS)
 
-    async def _stream_anthropic(url, headers, body, stubbed_tools, finalize=None):
+    def _trace_stream_message(raw: bytes, status: int) -> dict:
+        """Best-effort message view of a buffered upstream stream, for the trace."""
+        if status >= 400:
+            try:
+                return {"error": json.loads(raw)}
+            except Exception:
+                return {"error": raw[:500].decode("utf-8", "replace")}
+        try:
+            return _parse_sse_to_message(raw)
+        except Exception as e:  # noqa: BLE001 — tracing must never break a request
+            return {"error": f"unparseable stream: {e}"}
+
+    async def _stream_anthropic(url, headers, body, stubbed_tools, finalize=None, rt=None,
+                                read_bodies=None, history=None, keep_ctx=None):
         """Pull the upstream stream into memory. With no virtual tool call present,
         hand the exact bytes to the client. Otherwise re-run non-streaming, resolve,
         and rebuild the event stream from the finished message.
@@ -1588,6 +1913,7 @@ def create_app(
         is known, so a failed stream isn't credited with savings (issue #19)."""
         collected = bytearray()
         status = 200
+        _t_up = time.time()
         try:
             async with http_client.stream("POST", url, headers=headers,
                                           json={**body, "stream": True}) as resp:
@@ -1597,15 +1923,24 @@ def create_app(
         except httpx.ConnectError as e:
             if finalize:
                 finalize(502)
+            if rt:
+                rt.upstream(rnd=0, kind="stream", status=502, message={"error": str(e)},
+                            elapsed_s=time.time() - _t_up, outcome="error")
+                rt.final(502, None)
             return JSONResponse(content={"error": f"Cannot connect to {url}: {e}"}, status_code=502)
         except httpx.TimeoutException:
             if finalize:
                 finalize(504)
+            if rt:
+                rt.upstream(rnd=0, kind="stream", status=504, message={"error": "timeout"},
+                            elapsed_s=time.time() - _t_up, outcome="error")
+                rt.final(504, None)
             return JSONResponse(content={"error": f"Upstream timed out: {url}"}, status_code=504)
         if finalize:
             finalize(status)
 
         raw = bytes(collected)
+        trace_msg = _trace_stream_message(raw, status) if rt else None
         import os as _uos  # TEMP per-request upstream-usage diagnostic; not committed
         _up = _uos.environ.get("PARITOK_USAGE_LOG")
         if _up:
@@ -1620,23 +1955,52 @@ def create_app(
             except Exception:
                 pass
         has_virtual = any(marker in raw for marker in _VIRTUAL_MARKERS)
-        has_edit = any(f'"{t}"'.encode() in raw for t in _EDIT_TOOLS)
+        has_edit = (any(f'"{t}"'.encode() in raw for t in _EDIT_TOOLS)
+                    or (b".replace" in raw.lower()
+                        and any(f'"{t}"'.encode() in raw for t in _SHELL_TOOLS))
+                    or (any(f'"{t}"'.encode() in raw for t in ("Write", "MultiEdit", "NotebookEdit"))
+                        and re.search(rb"(?:#|//) L\d+-\d+", raw) is not None))
+        # A virtual call is resolved from the reply already buffered: re-running the
+        # request instead (as this used to) is a full-context upstream call whose only
+        # output is the same tool call again — or, as often as not, a different turn,
+        # silently replacing the one the model chose. Only when the reply can't be
+        # reassembled exactly is it thrown away and the request re-run.
+        first = _stream_reply_for_resolve(raw, status) if has_virtual else None
+        if has_virtual and first is None:  # thrown away for a re-run: a hidden call
+            try:
+                proxy_stats.record_hidden(_parse_sse_to_message(raw).get("usage"), body.get("model", ""))
+            except Exception:  # noqa: BLE001 — accounting must never break a request
+                pass
+        if rt and first is None:
+            rt.upstream(rnd=0, kind="stream", status=status, message=trace_msg,
+                        elapsed_s=time.time() - _t_up,
+                        outcome="discarded" if has_virtual else "visible")
         if not has_virtual and not has_edit:
+            if rt:
+                rt.final(status, trace_msg)
             return _sse_stream(raw, status)  # untouched pass-through
 
         if has_virtual:
             # A virtual tool call is present — resolve it server-side (may re-POST).
             try:
-                message, _st, _hd = await _anthropic_resolve(url, headers, body, stubbed_tools)
+                message, _st, _hd = await _anthropic_resolve(
+                    url, headers, body, stubbed_tools, rt, first=first, first_status=status,
+                    first_elapsed=time.time() - _t_up, keep_ctx=keep_ctx)
             except (httpx.ConnectError, httpx.TimeoutException):
+                if rt:
+                    rt.final(status, trace_msg)
                 return _sse_stream(raw, status)
         else:
             # Only a client-side Edit is present: reassemble the message we already
             # buffered (no extra upstream call) and rewrite the Edit in place.
             message = _parse_sse_to_message(raw)
         if not isinstance(message.get("content"), list):
+            if rt:
+                rt.final(status, trace_msg)
             return _sse_stream(raw, status)  # error payload — prefer the raw stream
-        message = _recover_edits(message)
+        message = _recover_edits(message, rt, read_bodies, history)
+        if rt:
+            rt.final(200, message)
         return _sse_stream(_message_to_events(message))
 
     def _event(name: str, data: dict) -> str:

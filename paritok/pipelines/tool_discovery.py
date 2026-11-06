@@ -32,6 +32,49 @@ _CORE_EXEC_TOOLS = frozenset({
     "Read", "Write", "Edit", "Glob", "Grep", "Bash",
 })
 
+# Client-side tool search (Claude Code's deferred tool loading): the client itself
+# keeps most tool schemas out of the prompt and loads them on demand — its ToolSearch
+# tool returns `tool_reference` blocks and the found schemas join tools[] on later
+# turns. Filtering on top of that fights it: the frozen selection drops tools the
+# agent just loaded, and dropping the deferred placeholder breaks the mechanism.
+# The savings are already realized client-side, so discovery passes such requests
+# through untouched.
+_CLIENT_TOOL_SEARCH_NAMES = frozenset({"ToolSearch"})
+
+
+def _is_protected_tool(tool: dict) -> bool:
+    """Tools discovery must never drop or stub: Anthropic server tools (a `type`
+    like web_search_20250305 — stubbing turns them into a client tool nobody can
+    run) and deferred tools (`defer_loading` — not in the prompt, nothing to save)."""
+    if not isinstance(tool, dict):
+        return False
+    t = tool.get("type")
+    return bool(tool.get("defer_loading")) or (t is not None and t not in ("custom", "function"))
+
+
+def client_tool_search_active(tools: list[dict] | None, messages: list[dict] | None = None) -> bool:
+    """True when the client is already doing deferred tool loading itself: it sends a
+    ToolSearch tool, a `defer_loading` tool or an API tool-search tool, or the history
+    already carries `tool_reference` blocks."""
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("defer_loading") or tool.get("name") in _CLIENT_TOOL_SEARCH_NAMES:
+            return True
+        if str(tool.get("type") or "").startswith("tool_search_tool"):
+            return True
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            inner = block.get("content") if isinstance(block, dict) else None
+            if isinstance(inner, list) and any(
+                    isinstance(x, dict) and x.get("type") == "tool_reference" for x in inner):
+                return True
+    return False
+
+
 # Common English stopwords to ignore during keyword matching
 _STOPWORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -147,6 +190,45 @@ class ToolDiscoveryPipeline:
 
     def __init__(self, config: ParitokConfig | None = None):
         self.config = config or ParitokConfig()
+        # session id -> tool names present on the session's first request; only
+        # those are ever deferred (see defer_unselected).
+        self._initial_tools: dict[str, frozenset] = {}
+
+    def defer_unselected(self, tools: list[dict], query: str,
+                         session_id: str | None = None) -> tuple[list[dict], list[str]]:
+        """Tool-search mode: keep the semantic top-k inline and mark every other tool
+        `defer_loading: true` instead of dropping or stubbing it. A deferred tool stays
+        in tools[], so the client's ToolSearch can still load it (its tool_reference
+        resolves); a dropped one makes the API 400 ("Tool reference ... not found").
+
+        Never deferred: ToolSearch itself, the core execution tools, PowerShell when it
+        is the only shell, tools that are already deferred or are server tools, and any
+        tool that wasn't there on the session's first request — that is a tool the
+        agent loaded through ToolSearch, so it must stay usable. Returns
+        (tools in the client's order, names newly deferred)."""
+        cfg = self.config.tool_discovery
+        sid = session_id or query or "default"
+        names = [t.get("name") for t in tools if isinstance(t, dict)]
+        initial = self._initial_tools.setdefault(sid, frozenset(names))
+        if cfg.strategy != "embedding" or len(tools) <= cfg.k_max:
+            return list(tools), []
+        try:
+            from paritok.tool_topk import predict_topk_frozen
+        except ImportError:  # embedding deps missing → leave the tools alone
+            return list(tools), []
+        keep = set(predict_topk_frozen(sid, query, tools, k_max=cfg.k_max))
+        keep |= _CORE_EXEC_TOOLS | _CLIENT_TOOL_SEARCH_NAMES
+        if "Bash" not in names:
+            keep.add("PowerShell")  # Windows without Bash: it's the agent's only shell
+        out, deferred = [], []
+        for t in tools:
+            n = t.get("name") if isinstance(t, dict) else None
+            if (n in keep or n not in initial or _is_protected_tool(t)):
+                out.append(t)
+            else:
+                out.append({**t, "defer_loading": True})
+                deferred.append(n)
+        return out, deferred
 
     def filter_tools(self, tools: list[dict], query: str,
                      session_id: str | None = None) -> DiscoveryResult:
@@ -161,6 +243,18 @@ class ToolDiscoveryPipeline:
         Returns:
             DiscoveryResult with tools (full + stubs), full_tools, and stubbed_tools
         """
+        # Server tools / deferred tools always pass through as-is; only the rest is
+        # filtered, and the protected ones are appended back (stable order → cache-safe).
+        protected = [t for t in tools if _is_protected_tool(t)]
+        if protected:
+            rest = [t for t in tools if not _is_protected_tool(t)]
+            r = self.filter_tools(rest, query, session_id=session_id) if rest else DiscoveryResult(
+                tools=[], full_tools=[], stubbed_tools=[], original_count=0, kept_count=0)
+            return DiscoveryResult(
+                tools=r.tools + protected, full_tools=r.full_tools + protected,
+                stubbed_tools=r.stubbed_tools, original_count=len(tools),
+                kept_count=r.kept_count + len(protected))
+
         cfg = self.config.tool_discovery
         limit = cfg.k_max if cfg.strategy == "embedding" else cfg.top_k
 

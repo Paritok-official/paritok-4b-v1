@@ -130,6 +130,27 @@ def _resolve_trace_path(config) -> str | None:
     return None
 
 
+_HOOKS: dict[str, object] = {}
+
+
+def _post_compress_hook():
+    """Experiment hook: PARITOK_POSTCOMPRESS_HOOK=/path/to/file.py:func is called on every
+    model output before the gateway's own post-processing, as
+    func(compressed, original=, query=, source=, kind=, context=) -> str. Used by the
+    loopbench v2 simulation (eval/loopbench/v2_sim.py); unset in production."""
+    spec = os.environ.get("PARITOK_POSTCOMPRESS_HOOK", "").strip()
+    if not spec:
+        return None
+    if spec not in _HOOKS:
+        import importlib.util
+        path, _, func = spec.rpartition(":")
+        mod_spec = importlib.util.spec_from_file_location("paritok_postcompress_hook", path)
+        mod = importlib.util.module_from_spec(mod_spec)
+        mod_spec.loader.exec_module(mod)
+        _HOOKS[spec] = getattr(mod, func)
+    return _HOOKS[spec]
+
+
 @dataclass
 class CompressionResult:
     compressed: str
@@ -181,6 +202,9 @@ class CompressionPipeline:
             getattr(self.config, "local_model", None), "num_ctx", 8192
         )
         self._warned_intents: set[str] = set()
+        # Items forwarded verbatim because the backend couldn't compress them, and why
+        # (see `_keep_verbatim`). Insertion-ordered so the oldest go first past the cap.
+        self._kept_verbatim: dict[str, str] = {}
 
     def _debug_dump(self, record: dict) -> None:
         if not self._trace_path:
@@ -207,10 +231,18 @@ class CompressionPipeline:
         source: str | None = None,
         upstream_model: str | None = None,
         model_input: str | None = None,
+        item_key: str | None = None,
+        context: dict | None = None,
     ) -> CompressionResult:
         """Compress content via the local SEG model.
 
         Args:
+            item_key: Identifies the conversation item this content is (e.g. the
+                tool_use_id of its tool_result), so an item first forwarded verbatim
+                because the backend couldn't compress it stays verbatim on every later
+                request. Without it, identical content is treated as the same item.
+            context: What produced the content ({"tool": name, "input": args}), for
+                the experiment hook only (see `_post_compress_hook`).
             content: Text to compress (tool output, conversation history, etc.)
                 Used for token counting, caching, shadow storage and the ratio —
                 i.e. what the agent actually sent.
@@ -243,6 +275,20 @@ class CompressionPipeline:
         if _REF_PATTERN.match(content.strip()):
             return self._skip(content, original_tokens, "already_compressed")
 
+        # 1-. An item already forwarded verbatim because the backend couldn't compress it
+        # stays verbatim. It is in the upstream prompt cache as-is: compressing it on a
+        # later request (the GPU came back, the intent changed) changes those bytes, and
+        # everything cached after it is written again (loopbench r11: a Bash output
+        # passed through during a GPU outage got compressed 14 requests later — 156k
+        # tokens of cache re-written). Also spares a backend call per request.
+        keep_key = (f"{item_key}:{content_hash(content)}" if item_key
+                    else content_hash(content))
+        kept = self._kept_verbatim.get(keep_key)
+        if kept is not None:
+            res = self._skip(content, original_tokens, kept)
+            res.metadata["kept_verbatim"] = True
+            return res
+
         # 1a. Pin-on-expand: once the model has called read_original on this file it needs
         # the exact bytes, so stop shrinking that file — pass the read through VERBATIM.
         # The model then sees the current file directly and no longer re-expands it every
@@ -254,8 +300,17 @@ class CompressionPipeline:
 
         # 1b. Path-keyed short-circuit (Read short-circuit). Bypasses the
         # min/max token gates: if we have a prior ref for this exact source
-        # path and the new content is byte-equal or a normalized substring
-        # of the stored original, reuse the existing tag.
+        # path and the new content is the SAME read again (normalized for
+        # line-number prefixes, e.g. Read vs `cat -n`), reuse the existing tag.
+        #
+        # Only an identical re-read. A SLICE of an earlier read (offset/limit)
+        # used to match too ("normalized substring") and got the WHOLE earlier
+        # summary back: the agent asked for specific lines and received a
+        # summary that didn't contain them — often larger than the slice itself,
+        # since the token gates are bypassed here — so it re-read or called
+        # read_original (loopbench: 6-13 per Opus session, ~1/3 of its
+        # read_original calls). A slice now goes through the normal path below:
+        # passed through when small, else compressed on its own.
         if source:
             prior_sid = self.storage.get_shadow_for_path(source)
             if prior_sid:
@@ -264,9 +319,7 @@ class CompressionPipeline:
                 if prior_content is not None and cached_tag is not None:
                     norm_new = _normalize_for_match(content)
                     norm_prior = _normalize_for_match(prior_content)
-                    if norm_new and (
-                        norm_new == norm_prior or norm_new in norm_prior
-                    ):
+                    if norm_new and norm_new == norm_prior:
                         compressed_tokens = count_tokens(cached_tag, enc)
                         return CompressionResult(
                             compressed=cached_tag,
@@ -347,7 +400,8 @@ class CompressionPipeline:
                 "compression backend failed (%s: %s); forwarding original uncompressed",
                 type(e).__name__, e,
             )
-            return self._skip(content, original_tokens, f"backend_error:{type(e).__name__}")
+            return self._keep_verbatim(keep_key, content, original_tokens,
+                                       f"backend_error:{type(e).__name__}")
 
         # 5b. An empty / whitespace-only body is a FAILED compression, not a perfect
         # one. count_tokens("") == 0 makes savings_ratio ≈ 1.0, which would sail past
@@ -355,7 +409,26 @@ class CompressionPipeline:
         # input (the hosted /api/compress could relay "" straight from the GPU worker).
         # Keep the original — never emit empty compressed output (issue #38).
         if content.strip() and not (isinstance(compressed, str) and compressed.strip()):
-            return self._skip(content, original_tokens, "empty_compression")
+            return self._keep_verbatim(keep_key, content, original_tokens, "empty_compression")
+
+        # 5c. Real indentation back on the kept lines, then line-range anchors on the
+        # definitions — both computed exactly from the line-numbered input the model saw
+        # (no-ops for unnumbered content). Keep the model's raw output for the
+        # echo/passthrough check below.
+        raw_compressed = compressed
+        hook = _post_compress_hook()
+        if hook is not None and compressed != model_text:
+            try:
+                compressed = hook(compressed, original=model_text, query=query, source=source,
+                                  kind=kind, context=context) or compressed
+            except Exception as e:  # noqa: BLE001 — an experiment must never break a request
+                logger.warning("post-compress hook failed (%s); using the model output", e)
+        if getattr(cfg, "restore_indent", False):
+            from paritok.pipelines.line_anchors import restore_indent
+            compressed = restore_indent(compressed, model_text)
+        if getattr(cfg, "line_anchors", False):
+            from paritok.pipelines.line_anchors import annotate
+            compressed = annotate(compressed, model_text, source)
 
         # 6. Effectiveness check — judged on the REAL payload we return: the TAGGED
         # [REF:id] output (the tag adds ~5-15 tokens), measured against what the MODEL
@@ -379,11 +452,11 @@ class CompressionPipeline:
             # of "below_refusal_threshold", which reads like the content "didn't compress"
             # and sends debuggers to tune a threshold that has nothing to do with it.
             # (Compare the UNtagged model output — the tag is always our own addition.)
-            if compressed == model_text:
+            if raw_compressed == model_text:
                 reason = "gpu_unavailable" if self.config.use_gpu_server else "backend_passthrough"
             else:
                 reason = "below_refusal_threshold"
-            return self._skip(content, original_tokens, reason)
+            return self._keep_verbatim(keep_key, content, original_tokens, reason)
 
         # 7. Accepted — store the original and cache the tagged result (built above).
         self.storage.store(content)
@@ -431,6 +504,16 @@ class CompressionPipeline:
                     original_len, budget, self._intent_num_ctx, budget,
                 )
         return capped
+
+    _KEPT_VERBATIM_CAP = 100_000
+
+    def _keep_verbatim(self, key: str, content: str, original_tokens: int,
+                       reason: str) -> CompressionResult:
+        """Skip, and remember that this item went out verbatim (see step 1-)."""
+        self._kept_verbatim[key] = reason
+        if len(self._kept_verbatim) > self._KEPT_VERBATIM_CAP:
+            del self._kept_verbatim[next(iter(self._kept_verbatim))]
+        return self._skip(content, original_tokens, reason)
 
     def _skip(self, content: str, original_tokens: int, reason: str) -> CompressionResult:
         self._debug_dump({

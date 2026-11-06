@@ -305,6 +305,8 @@ $env:OPENAI_BASE_URL    = "http://127.0.0.1:8080"
 
 Keep your real provider API key set as usual (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) — the proxy only rewrites the request body and forwards your headers upstream. Compressed prompts go upstream; original responses come back unchanged.
 
+> **Claude Code tool search stays on.** Claude Code normally defers MCP tool schemas (only names load; `ToolSearch` fetches a schema when needed) but loads every schema inline whenever `ANTHROPIC_BASE_URL` points to a proxy. Paritok forwards the `tool_reference` blocks tool search needs, so `paritok up` / `paritok proxy` set `ENABLE_TOOL_SEARCH=true` in `~/.claude/settings.json` for you — only if you haven't set it yourself, and with a one-time backup (`settings.json.paritok-toolsearch.bak`). That is Claude Code's own default on a direct connection, so direct sessions don't change. While tool search is on, paritok leaves the tool list untouched (its own tool filter only runs for clients that send every schema inline). Opt out with `claude_code: {tool_search: false}` in `paritok.yaml`.
+
 > **Codex is the exception — it does *not* read `OPENAI_BASE_URL`.** The Codex CLI takes its endpoint from `~/.codex/config.toml`. See [Codex setup](#codex-cli).
 
 #### Any OpenAI-compatible upstream (Groq, Gemini, OpenRouter, …)

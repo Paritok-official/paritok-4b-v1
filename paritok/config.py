@@ -54,6 +54,12 @@ class CompressionConfig:
     min_tokens: int = 512
     max_tokens: int = 50000
     refusal_threshold: float = 0.05
+    # Append the real line range to each def/class header a compressed code view keeps
+    # ("def f(...):  # L120-188 (partial)") — the 4B drops line numbers. ~5% of the view.
+    line_anchors: bool = True
+    # Give kept lines their real indentation back — the 4B shifts mid-file slices to
+    # column 0, and an agent editing through a script copies the wrong indent. ~0.1%.
+    restore_indent: bool = True
 
     def __post_init__(self):
         assert self.min_tokens >= 0, f"min_tokens must be >= 0, got {self.min_tokens}"
@@ -71,6 +77,10 @@ class ToolDiscoveryConfig:
     k_max: int = 8                     # max tools kept in full schema
     adaptive: bool = True              # coding tasks drop unselected MCP; MCP tasks stub them
     mcp_signal_threshold: float = 1.0  # rank-weighted MCP signal needed to stub MCP tools
+    # When the client runs its own tool search (Claude Code), mark the tools the
+    # selection leaves out `defer_loading` instead of dropping them, so ToolSearch can
+    # still load them. false → pass the client's tool list through untouched.
+    defer_under_tool_search: bool = True
 
     _VALID_STRATEGIES: ClassVar[frozenset] = frozenset({"relevance", "passthrough", "embedding"})
 
@@ -126,6 +136,24 @@ class CodexConfig:
 
 
 @dataclass
+class ClaudeCodeConfig:
+    """Keep Claude Code's MCP tool search on when it routes through paritok.
+
+    Claude Code defers MCP tool schemas by default (only names load; ToolSearch
+    pulls a schema in when needed) — but switches that off and sends EVERY tool
+    schema inline as soon as ANTHROPIC_BASE_URL points to a non-first-party host,
+    because most proxies don't forward `tool_reference` blocks. Paritok does, so
+    `paritok up`/`proxy` sets `ENABLE_TOOL_SEARCH=true` in the `env` block of
+    ~/.claude/settings.json (only if the user hasn't set it) to give Claude Code
+    the same behavior as a direct connection. `true` is what Claude Code already
+    does against the first-party API, so direct sessions are unaffected.
+    """
+
+    tool_search: bool = True
+    settings_path: str = ""  # override the settings.json location (empty → ~/.claude/settings.json)
+
+
+@dataclass
 class TraceConfig:
     """Per-compression debug trace. When enabled, every compression event
     (original + compressed body, tokens, ratio) is appended to `path` as JSONL.
@@ -149,6 +177,7 @@ class ParitokConfig:
     gpu_server: GpuServerConfig = field(default_factory=GpuServerConfig)
     trace: TraceConfig = field(default_factory=TraceConfig)
     codex: CodexConfig = field(default_factory=CodexConfig)
+    claude_code: ClaudeCodeConfig = field(default_factory=ClaudeCodeConfig)
     shadow_storage: str = "memory"  # "memory" | "redis" (redis needs paritok[redis])
     redis: RedisConfig = field(default_factory=RedisConfig)
 
@@ -198,6 +227,8 @@ class ParitokConfig:
             config.trace = cls._merge_dataclass(config.trace, data["trace"])
         if "codex" in data:
             config.codex = cls._merge_dataclass(config.codex, data["codex"])
+        if "claude_code" in data:
+            config.claude_code = cls._merge_dataclass(config.claude_code, data["claude_code"])
         if "shadow_storage" in data:
             config.shadow_storage = data["shadow_storage"]
         if "redis" in data:
