@@ -3,28 +3,57 @@
 USD per 1,000,000 INPUT tokens — public list prices, kept small and easy to edit.
 Only input is priced: it's the part Paritok compresses; output is the provider's
 and out of scope. A model is matched by its longest name prefix (so
-`claude-sonnet-4-20250514` → `claude-sonnet`); an unknown model falls back to
-$3/M (Claude Sonnet) — it's an estimate either way.
+`claude-sonnet-4-20250514` → `claude-sonnet-4`); an unknown model falls back to
+$3/M (Claude Sonnet 4.x) — it's an estimate either way.
 
-These are list prices as of early 2026; update them when providers change pricing.
+List prices as of November 2026 (models the providers no longer list keep their last
+price); update them when providers change pricing.
+https://platform.claude.com/docs/en/about-claude/pricing
+https://developers.openai.com/api/docs/pricing
 """
 
 from __future__ import annotations
 
 # Fallback input price for a model not in the table, USD per 1M tokens
-# (Claude Sonnet's rate).
+# (Claude Sonnet 4.x's rate).
 DEFAULT_USD_PER_MTOK = 3.0
 
 # $ per 1M input tokens.
 INPUT_USD_PER_MTOK: dict[str, float] = {
     # Anthropic — Claude Code's models
-    "claude-opus": 15.0,
+    "claude-fable": 10.0,
+    "claude-mythos": 10.0,
+    "claude-opus-5-5": 4.0,
+    "claude-opus-5": 5.0,
+    "claude-opus-4-8": 5.0,
+    "claude-opus-4-7": 5.0,
+    "claude-opus-4-6": 5.0,
+    "claude-opus-4-5": 5.0,
+    "claude-opus-4-1": 15.0,
+    "claude-opus-4": 15.0,
+    "claude-opus": 4.0,  # newer than this table: assume the family's current rate
+    "claude-sonnet-5-5": 2.0,
+    "claude-sonnet-5": 2.0,
+    "claude-sonnet-4": 3.0,
+    "claude-sonnet": 2.0,  # newer than this table
     "claude-3-7-sonnet": 3.0,
     "claude-3-5-sonnet": 3.0,
-    "claude-sonnet": 3.0,
+    "claude-haiku-4-5": 1.0,
+    "claude-haiku": 0.10,  # newer than this table; Haiku 5.5 is in INPUT_TIERS
     "claude-3-5-haiku": 0.80,
-    "claude-haiku": 1.0,
-    # OpenAI — Codex / GPT
+    # OpenAI — Codex / GPT. GPT-6, GPT-5.6, 5.5 and 5.4 are in INPUT_TIERS.
+    "gpt-6-cyber": 20.0,
+    "gpt-6-rosalind": 15.0,
+    "gpt-rosalind": 5.0,
+    "gpt-5.6-cyber": 12.5,
+    "gpt-5.5-cyber": 12.5,
+    "gpt-5.4-mini": 0.75,
+    "gpt-5.4-nano": 0.20,
+    "gpt-5.3-codex": 1.75,
+    "gpt-5.2-pro": 21.0,
+    "gpt-5.2": 1.75,
+    "gpt-5.1": 1.25,
+    "gpt-5-pro": 15.0,
     "gpt-5-mini": 0.25,
     "gpt-5-nano": 0.05,
     "gpt-5": 1.25,
@@ -34,6 +63,7 @@ INPUT_USD_PER_MTOK: dict[str, float] = {
     "gpt-4o-mini": 0.15,
     "gpt-4o": 2.50,
     "o4-mini": 1.10,
+    "o3-pro": 20.0,
     "o3-mini": 1.10,
     "o3": 2.00,
     # MiniMax-M3.1-Flash has a flat rate, overriding the shorter M3 tier prefix.
@@ -65,6 +95,22 @@ INPUT_TIERS: dict[str, list[tuple[int | None, float]]] = {
     # it errs toward charging the long-context rate slightly early, keeping the
     # reported saving conservative in the same direction the flat rate already chose.
     "minimax-m3": [(512_000, 0.30), (None, 0.60)],
+    # Claude Haiku 5.5: a prompt over 100,000 tokens pays the higher price.
+    "claude-haiku-5-5": [(100_000, 0.10), (None, 0.50)],
+    # OpenAI: the input rate doubles above 272K input tokens. OpenAI writes "<=272K";
+    # 272,000 is taken the same way as MiniMax's "512k" above.
+    "gpt-6-astra": [(272_000, 10.0), (None, 20.0)],
+    "gpt-6-sol": [(272_000, 2.0), (None, 4.0)],
+    "gpt-6-luna": [(272_000, 0.10), (None, 0.20)],
+    "gpt-6.1-sol": [(272_000, 2.0), (None, 4.0)],
+    "gpt-6.1-terra": [(272_000, 1.0), (None, 2.0)],
+    "gpt-5.6-sol": [(272_000, 4.0), (None, 8.0)],
+    "gpt-5.6-terra": [(272_000, 2.0), (None, 4.0)],
+    "gpt-5.6-luna": [(272_000, 0.20), (None, 0.40)],
+    "gpt-5.5": [(272_000, 5.0), (None, 10.0)],
+    "gpt-5.5-pro": [(272_000, 30.0), (None, 60.0)],
+    "gpt-5.4": [(272_000, 2.50), (None, 5.0)],
+    "gpt-5.4-pro": [(272_000, 30.0), (None, 60.0)],
 }
 
 # Cache-READ multiplier: what a provider charges for an input token served from
@@ -75,8 +121,21 @@ INPUT_TIERS: dict[str, list[tuple[int | None, float]]] = {
 # (Turn 1 is actually a cache *write* at ~1.25x, so this slightly under-counts a
 # short session and converges to exact over a long one — conservative on purpose.)
 CACHE_READ_MULT: dict[str, float] = {
-    "claude": 0.1,      # Anthropic: cache read = 10% of base input
+    "claude": 0.1,      # Anthropic: cache read = 10% of base input, except:
+    "claude-opus-5-5": 0.05,
+    "claude-sonnet-5-5": 0.05,
+    "claude-fable-5-1": 0.025,
+    "claude-mythos-5-1": 0.025,
+    "gpt-6": 0.1,       # OpenAI: astra, sol and luna $/10, except 6.1 sol and terra $/20
+    "gpt-6.1-sol": 0.05,
+    "gpt-6.1-terra": 0.05,
     "gpt-5": 0.1,       # OpenAI cached input, per-model
+    # The pro models have no cached-input rate: a re-sent token pays the full price.
+    "gpt-5.5-pro": 1.0,
+    "gpt-5.4-pro": 1.0,
+    "gpt-5.2-pro": 1.0,
+    "gpt-5-pro": 1.0,
+    "o3-pro": 1.0,
     "gpt-4.1": 0.25,
     "gpt-4o": 0.5,
     "o4": 0.25,
@@ -85,13 +144,14 @@ CACHE_READ_MULT: dict[str, float] = {
     "minimax-m3.1-flash": 0.1,
     "minimax": 0.2,
 }
-# Unknown model → assume the deepest discount (smallest saving) to avoid overstating.
+# Unknown model → assume the common 10% rather than a provider's specific rate.
 DEFAULT_CACHE_READ_MULT = 0.1
 
 # Cache-WRITE multiplier: the first turn a frozen prefix is cached costs a premium
-# over base input (Anthropic's 5-min cache write is 1.25x; OpenAI writes at base).
-# We use 1.25x — the Claude Code case, and the conservative (larger-write) end for
-# OpenAI. Applied once, to the first tool-bearing turn per model.
+# over base input. Anthropic: 1.25x for the 5-min cache, 2x for the 1-hour one, which
+# Claude Code used in every loopbench run. OpenAI: 1.25x for the 30-min cache on GPT-6
+# and 5.6, none listed on older models. We use 1.25x: for a 1-hour write it under-counts
+# the saving. Applied once, to the first tool-bearing turn per model.
 CACHE_WRITE_MULT = 1.25
 
 

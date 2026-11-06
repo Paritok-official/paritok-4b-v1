@@ -250,7 +250,7 @@ class ProxyStats:
         input rate (unknown → $3/M). The compressed *content* is new input, priced
         at the base rate. The frozen *tool-schema* block is byte-stable across a
         conversation: its first turn is a cache WRITE (1.25x base), every turn after
-        is a cache READ (Claude 0.1x, GPT-5 0.1x, ...) — each priced at its true
+        is a cache READ (see pricing.CACHE_READ_MULT) — each priced at its true
         multiplier rather than full list price."""
         from paritok.proxy.pricing import cache_read_multiplier, CACHE_WRITE_MULT
         total = 0.0
