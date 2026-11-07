@@ -164,6 +164,8 @@ That's roughly **3× the runway on any budget**, giving the agent more turns to 
 
 The **74%** figure is Paritok's **content compression rate** — file reads, tool output, and history shrink to ~26% of their size. End-to-end savings compound with session length.
 
+> **How this is measured:** each segment is compressed directly against the model, per segment, on SWE-bench Lite, without the gateway's skip logic (`min_tokens` / `max_tokens` / `refusal_threshold`). Reproduce it with [`eval_model/`](eval_model/).
+
 **Per-session cost** at Claude Sonnet input pricing (`$3 / M input tokens`):
 
 | Turns | Context (uncompressed → compressed) | Savings | Bill (no Paritok → with Paritok) |
@@ -417,11 +419,11 @@ The gateway's content compression is powered by **Paritok-4B-v1**, the first ope
 
 ### Highlights
 
-- 🎨 **Code-native.** Trained on real coding-agent trajectories (`file_read`, `bash_command`, `log_output`, …). It knows what an import statement is worth vs a debug line, so it protects function names, paths, and error strings while compressing.
+- 🎨 **Code-native.** Trained on real coding-agent trajectories (`file_read`, `bash_command`, `log_output`, …). It knows what an import statement is worth vs a debug line, so it protects the intent-relevant function names, paths, and error strings while compressing. Exact recall via `read_original` is the safety net for anything else.
 - 📋 **Extractive — audited, not asserted.** It selects spans instead of rewriting them: **96.2%** of the identifiers, paths, and numbers it emits on held-out SWE-bench Lite are copied straight from the input, so an exact-match edit against compressed context still applies.
 - 🚀 **Compresses each segment to 25.7%** of original — **2× harder than gpt-4.1-mini** (50.2% CR) and **2.4× harder than gpt-5** (61.9% CR).
 - 🎯 **Retains 86.5% of full-context solve quality** on SWE-bench Lite (**89.3%** fed the line-numbered input it was trained for, where the paired difference against uncompressed is not significant, p = 0.079) — matching gpt-4.1-mini as compressor at **less than half the token spend**.
-- 🪶 **Small & self-hostable** — 4B LoRA adapter, bf16, runs on a single 24GB GPU. No SaaS, no lock-in, no per-token compressor fee.
+- 🪶 **Small & self-hostable** — two paths: the q4 GGUF runs on CPU via Ollama with no key or account ([Quickstart Option A](#2-pick-a-backend--self-host-or-the-gpu-server)), or serve the bf16 4B LoRA adapter under vLLM on a single 24GB GPU. No SaaS, no lock-in, no per-token compressor fee.
 - 🔓 **Fully open** — Apache 2.0 weights, reproducible data pipeline, real end-to-end SWE-bench numbers.
 
 ### Benchmark: SWE-bench Lite
