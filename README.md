@@ -369,7 +369,7 @@ import paritok
 
 client = paritok.ParitokClient(anthropic.Anthropic())
 resp = client.messages.create(
-    model="claude-sonnet-4-20250514", max_tokens=4096, messages=[...]
+    model="claude-sonnet-5-5", max_tokens=4096, messages=[...]
 )
 print(resp._paritok_savings.saved_tokens, resp._paritok_savings.ratio)
 ```
@@ -445,6 +445,8 @@ Real end-to-end evaluation. An agent scaffold receives its context through each 
 > **The benchmark is a floor, not a ceiling.** The 86.5% measures the **raw 4B model** with **no recall enabled** — compressed output fed straight to the agent. What you actually deploy is the gateway: every segment is tagged `[REF:id]` and the agent can call `read_original` to pull back the exact bytes at any time. Nothing is permanently discarded, so real-world deployment recovers quality the raw benchmark leaves on the table. We publish the raw-model number because it's the honest, reproducible floor.
 
 To reproduce these SWE-bench Lite numbers yourself, see the [`eval_model/`](eval_model/) folder — one command runs it end to end (pull from source → compress → score).
+
+<sub>The agent behind the numbers above was `claude-sonnet-4-5-20250929` at temperature 0. That model retires on 2026-11-30, so a fresh run uses `claude-sonnet-5-5`; absolute resolve counts will differ, while quality retained still compares both arms on the same agent. See [`eval_model/`](eval_model/) for details.</sub>
 
 ### Extractiveness, audited
 

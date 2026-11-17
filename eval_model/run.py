@@ -62,7 +62,9 @@ def main() -> None:
                          "native /api/chat reuses the system-prompt KV cache and flips this "
                          "model's compression to ~0.60 after the first request (see compress.py).")
     ap.add_argument("--agent-model",
-                    default=os.environ.get("PARITOK_EVAL_AGENT_MODEL", "claude-sonnet-4-5-20250929"))
+                    default=os.environ.get("PARITOK_EVAL_AGENT_MODEL", agent.DEFAULT_AGENT_MODEL),
+                    help=f"model that writes the patch (default: {agent.DEFAULT_AGENT_MODEL}; the published "
+                         "numbers used claude-sonnet-4-5-20250929, retired 2026-11-30)")
     ap.add_argument("--agent-workers", type=int, default=6)
     ap.add_argument("--harness-workers", type=int, default=6)
     ap.add_argument("--line-numbers", action="store_true",

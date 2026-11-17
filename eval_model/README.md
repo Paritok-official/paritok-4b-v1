@@ -49,6 +49,14 @@ Configure with `--n`, `--chunk`, `--compress-model`, `--ollama-url`,
 `--agent-model` (or `PARITOK_EVAL_AGENT_MODEL`). `ANTHROPIC_API_KEY` is read from
 the environment.
 
+**Agent model.** A fresh run uses `claude-sonnet-5-5` as the agent. The published
+numbers were produced with `claude-sonnet-4-5-20250929` at temperature 0; Anthropic
+retires that model on 2026-11-30, so it can no longer be the default. Sonnet 5.5 thinks
+by default and does not accept a temperature setting, so runs are not bit-for-bit
+repeatable, and absolute resolve counts will differ from the published ones. Quality
+retained is still a like-for-like comparison: both arms of a run use the same agent
+model.
+
 ### Optional: `--line-numbers` (real-agent regime)
 
 By default the eval compresses **raw** source. Real coding agents don't send raw
