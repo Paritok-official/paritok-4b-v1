@@ -481,13 +481,114 @@ def _to_responses_tool(t: dict) -> dict:
 
 
 # Header lines codex prepends when it reads a file through the shell: a
-# command-output frame (Exit code / Wall time / Total output lines / Output:).
-# Those extra lines tip classify_kind_from_content over its log_output line-count
-# heuristic, so a *source file* gets the aggressive "other" prompt that drops the
-# code and hallucinates. We only strip this exact frame; nothing else is touched.
+# command-output frame. Those extra lines tip classify_kind_from_content over its
+# log_output line-count heuristic, so a *source file* gets the aggressive "other"
+# prompt that drops the code and hallucinates. We only strip these frame lines;
+# nothing else is touched. The frame has changed across codex versions / tools:
+#   shell_command:          Exit code: 0 / Wall time: 0.1 seconds / Output:
+#   exec_command (direct):  Chunk ID: 7b541d / Wall time: 0.3155 seconds /
+#                           Process exited with code 0 (or Process running with
+#                           session ID N) / Original token count: 748 / Output:
+#   exec (code mode):       Script completed / Wall time 0.4 seconds / Output:
+#   truncated output:       Warning: truncated output (...) / Total output lines: N
 _CODEX_OUTPUT_HEADER_PREFIXES = (
-    "Exit code:", "Wall time:", "Total output lines:", "Output:",
+    "Exit code:", "Wall time", "Total output lines:", "Output:",
+    "Chunk ID:", "Process exited with code", "Process running with session ID",
+    "Original token count:", "Warning: truncated output",
+    "Script completed", "Script failed", "Script running with cell ID", "Script terminated",
 )
+
+# Codex's code mode (`exec`: the model writes JavaScript that calls
+# `tools.exec_command(...)`) hands each result back as a compact JSON object,
+# codex-rs tools/context.rs `code_mode_result`:
+#   {"chunk_id":"8846d4","wall_time_seconds":0.0000194,"exit_code":0,
+#    "original_token_count":574,"output":"<the command's output, \r\n-escaped>"}
+# (`session_id` instead of `exit_code` while the process is still running).
+_CODEX_ENVELOPE_KEYS = frozenset(
+    {"chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count"}
+)
+
+
+def _is_codex_exec_result(v) -> bool:
+    if not isinstance(v, dict) or not isinstance(v.get("output"), str):
+        return False
+    keys = set(v) - {"output"}
+    return bool(keys) and keys <= _CODEX_ENVELOPE_KEYS
+
+
+def _split_codex_envelopes(text: str):
+    """(outputs, rewrap) when `text` is JSON holding codex exec_command results, else None.
+
+    In code mode the model's own JavaScript decides what gets printed, so a result
+    can arrive alone (`text(await tools.exec_command(...))`), in an array, or nested
+    (`text({i, ...results[i]})` after Promise.allSettled gives
+    `{"i":0,"status":"fulfilled","value":{<result>}}`). Every result object found
+    anywhere in the JSON is collected, in document order.
+
+    Each result's command output sits JSON-escaped in `output`, so the compressor
+    would see ONE line of `\\n`-escaped text, which it never trained on: it either
+    fails to shrink it (the hosted no-gain guard then returns the original) or
+    rewrites it into plausible code that isn't in the file. So each output is
+    compressed unwrapped, then put back with `rewrap(new_outputs)`.
+
+    rewrap swaps only the `output` values and keeps every other byte (key order,
+    `0.0000194`-style numbers, the script's own fields), so the same item re-sent
+    next turn yields the same request bytes (prompt cache). `rewrap(outputs) == text`.
+    Other JSON (a package.json, an MCP result) has no such object and returns None.
+    """
+    s = text.strip()
+    if not (s[:1] in "{[" and '"output"' in s):
+        return None
+    try:
+        root = json.loads(s)
+    except ValueError:
+        return None
+    found: list[dict] = []
+
+    def walk(v, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if _is_codex_exec_result(v):
+            found.append(v)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x, depth + 1)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x, depth + 1)
+
+    walk(root)
+    if not found:
+        return None
+    outputs = [d["output"] for d in found]
+    # Where each encoded output sits in the raw text (document order = DFS order).
+    spans: list[tuple[int, int]] | None = []
+    pos = 0
+    for out in outputs:
+        encoded = json.dumps(out, ensure_ascii=False)
+        m = re.compile(r'"output"\s*:\s*' + re.escape(encoded)).search(text, pos)
+        if m is None:  # escaped differently than Python would (e.g. >)
+            spans = None
+            break
+        spans.append((m.end() - len(encoded), m.end()))
+        pos = m.end()
+
+    def rewrap(new_outputs: list[str]) -> str:
+        new_outputs = list(new_outputs)
+        if new_outputs == outputs:
+            return text
+        if spans is not None:
+            parts, last = [], 0
+            for (a, b), new in zip(spans, new_outputs):
+                parts += [text[last:a], json.dumps(new, ensure_ascii=False)]
+                last = b
+            parts.append(text[last:])
+            return "".join(parts)
+        for d, new in zip(found, new_outputs):  # rebuild the (parsed) object
+            d["output"] = new
+        return json.dumps(root, ensure_ascii=False, separators=(",", ":"))
+
+    return outputs, rewrap
 
 
 def _split_codex_header(content: str) -> tuple[str, str]:
@@ -527,6 +628,51 @@ def _normalize_crlf(text: str) -> str:
     if "\r" not in text:
         return text
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _responses_item_texts(item: dict) -> list[str]:
+    """The texts `_compress_responses_item` hands to `compress_text`, in the same order."""
+    itype = item.get("type")
+    if itype == "function_call_output" and isinstance(item.get("output"), str):
+        return [item["output"]]
+    if itype == "custom_tool_call_output" and isinstance(item.get("output"), list):
+        return [blk["text"] for blk in item["output"]
+                if isinstance(blk, dict) and blk.get("type") == "input_text"
+                and isinstance(blk.get("text"), str)]
+    return []
+
+
+def _codex_result_count(text: str) -> int:
+    """How many command results one output text carries: each exec result object in a
+    JSON block, or one plain-text body; a bare frame (code mode's status block) none."""
+    envelopes = _split_codex_envelopes(text)
+    if envelopes is not None:
+        return len(envelopes[0])
+    _, body = _split_codex_header(_normalize_crlf(text))
+    return 1 if body.strip() else 0
+
+
+def _code_mode_block_kinds(texts: list[str], call_kinds: list) -> list[list]:
+    """The kinds of the command results in each text block of a code-mode output, in order.
+
+    `call_kinds` holds the kind of each exec_command the script ran, in source order. When
+    the printed results match them one to one they line up in order; a single call site
+    (even inside a loop) covers every result; otherwise each result is left to content
+    sniffing (None).
+    """
+    counts = [_codex_result_count(t) for t in texts]
+    total = sum(counts)
+    if call_kinds and total == len(call_kinds):
+        flat = list(call_kinds)
+    elif len(call_kinds) == 1:
+        flat = [call_kinds[0]] * total
+    else:
+        flat = [None] * total
+    out, pos = [], 0
+    for c in counts:
+        out.append(flat[pos:pos + c])
+        pos += c
+    return out
 
 
 def _compress_responses_item(item: dict, compress_text) -> tuple[dict, bool]:
@@ -647,7 +793,7 @@ def create_app(
     from paritok.proxy.adapters import anthropic as anth_adapter
     from paritok.proxy.adapters import openai as oai_adapter
     from paritok.proxy.adapters import responses as resp_adapter
-    from paritok.strategies.kind_label import kinds_by_position
+    from paritok.strategies.kind_label import code_mode_kinds_by_position, kinds_by_position
     from paritok.token_counter import count_tokens
 
     async def _read_json_body(request):
@@ -1054,22 +1200,44 @@ def create_app(
         # what codex_edit_recovery maps a reflowed shell `-replace` back onto.
         codex_read_bodies: list[str] = []
 
-        # Kind of each function_call_output, from the function_call that produced it
-        # (matched by call_id): `sed -n` / `cat` -> file_read, `rg` -> search_result,
-        # `python -c` -> agent_generated_result, ...
+        # Kind of each tool output, from the call that produced it (matched by call_id):
+        # `sed -n` / `cat` -> file_read, `rg` -> search_result, `python -c` ->
+        # agent_generated_result, ... Code mode (`exec`) runs several commands in one
+        # call: its JavaScript's exec_command calls are lined up with the printed results.
         codex_kinds = kinds_by_position(input_items)
+        codex_call_kinds = code_mode_kinds_by_position(input_items)
 
-        def _compress_codex_text(text: str, kind_detail: str | None = None) -> str | None:
-            """Compress one shell/tool-output string. Splits codex's command-output
-            header off so only the body is compressed (byte-identical to what every
-            other agent feeds the model), re-attaches it, records stats + the read
-            body. Returns the new text, or None when compression is skipped."""
+        def _compress_codex_text(text: str, kinds: list | None = None) -> str | None:
+            """Compress one shell/tool-output string. Code-mode results arrive as
+            JSON with each command's output inside: compress those outputs and put
+            them back. `kinds`: the kind of each command result in `text`, in order
+            (None = sniff from the content). Returns the new text, or None when
+            compression is skipped."""
             if not isinstance(text, str) or not text.strip():
+                return None
+            kinds = list(kinds or [])
+            envelopes = _split_codex_envelopes(text)
+            if envelopes is not None:
+                outputs, rewrap = envelopes
+                new = [_compress_codex_output(o, kinds[n] if n < len(kinds) else None)
+                       for n, o in enumerate(outputs)]
+                if all(n is None for n in new):
+                    return None
+                return rewrap([o if n is None else n for o, n in zip(outputs, new)])
+            return _compress_codex_output(text, kinds[0] if kinds else None)
+
+        def _compress_codex_output(text: str, kind_detail: str | None = None) -> str | None:
+            """Splits codex's command-output header off so only the body is
+            compressed (byte-identical to what every other agent feeds the model),
+            re-attaches it, records stats + the read body."""
+            if not text.strip():
                 return None
             # codex reads via PowerShell (CRLF); normalize to LF so the content is
             # in-distribution for the compressor, like every other agent's output.
             text = _normalize_crlf(text)
             header, seg_body = _split_codex_header(text)
+            if not seg_body.strip():
+                return None  # a bare frame (e.g. code mode's "Script completed" block)
             if len(seg_body) > 40:
                 codex_read_bodies.append(strip_read_line_numbers(seg_body))
             # codex reads files without line numbers (out-of-distribution for the
@@ -1096,9 +1264,13 @@ def create_app(
             # compression can't freeze health checks / count_tokens / other sessions.
             def _compress_all_items() -> None:
                 for i, item in enumerate(input_items):
-                    kind_detail = codex_kinds.get((i, None))
+                    texts = _responses_item_texts(item)
+                    if (i, None) in codex_call_kinds:
+                        per_block = _code_mode_block_kinds(texts, codex_call_kinds[(i, None)])
+                    else:
+                        per_block = [[codex_kinds.get((i, None))]] * len(texts)
                     new_item, changed = _compress_responses_item(
-                        item, lambda t, k=kind_detail: _compress_codex_text(t, k))
+                        item, lambda t, it=iter(per_block): _compress_codex_text(t, next(it, None)))
                     if changed:
                         input_items[i] = new_item
 

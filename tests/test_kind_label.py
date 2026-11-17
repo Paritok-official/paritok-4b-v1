@@ -10,6 +10,9 @@ import pytest
 
 from paritok.strategies.kind_label import (
     V1_KIND,
+    code_mode_calls,
+    code_mode_kinds,
+    code_mode_kinds_by_position,
     kind_from_command,
     kind_from_content,
     kinds_by_position,
@@ -158,3 +161,63 @@ def test_wire_kind_v1_maps_onto_names_v1_was_trained_on():
 def test_wire_kind_v2_sends_the_kind_as_is():
     assert wire_kind("search_result", "v2") == "search_result"
     assert wire_kind(None, "v1") is None
+
+
+# ── Codex code mode: `exec` runs JavaScript; the commands are inside it ──
+# Scripts below are the ones gpt-6.1-sol wrote in live Codex 0.169.0 sessions.
+
+JS_AWAIT = ('text(await tools.exec_command({cmd:"Get-Content src/calc.py"}));\n'
+            'text(await tools.exec_command({cmd:"rg \'def \' src/calc.py"}));\n')
+JS_ALLSETTLED = ('const results = await Promise.allSettled([\n'
+                 'tools.exec_command({cmd:"Get-Content src/chunking.py; Get-Content src/calc.py",'
+                 'max_output_tokens:12000}),\n'
+                 'tools.exec_command({cmd:"rg \'def \' src",max_output_tokens:6000})\n'
+                 ']);for(let i=0;i<results.length;i++)text({i,...results[i]});\n')
+JS_ONE = ('const r = await tools.exec_command({cmd:"Get-Content src/chunking.py; Get-Content src/calc.py; '
+          'rg -n \'def \' src","max_output_tokens":12000});text(r.output);\n')
+
+
+def test_code_mode_calls_read_each_command_out_of_the_script():
+    assert code_mode_calls(JS_AWAIT) == [("exec_command", "Get-Content src/calc.py"),
+                                        ("exec_command", "rg 'def ' src/calc.py")]
+    assert code_mode_kinds(JS_AWAIT) == ["file_read", "search_result"]
+    assert code_mode_kinds(JS_ALLSETTLED) == ["file_read", "search_result"]
+    # one command that reads two files and greps: the files are most of it
+    assert code_mode_kinds(JS_ONE) == ["file_read"]
+
+
+@pytest.mark.parametrize("script, want", [
+    ("for (const f of files) text(await tools.exec_command({cmd: `cat ${f}`}));", ["file_read"]),
+    ("text(await tools.exec_command({'cmd': 'python -c \"print(1)\"'}));", ["agent_generated_result"]),
+    ('text(await tools.exec_command({cmd:["bash","-lc","pytest -q"]}));', ["test_output"]),
+    ('text(await tools.exec_command({cmd: command}));', [None]),             # not a literal
+    ('text(await tools.write_stdin({session_id: 3, chars: ""}));', ["command_output"]),
+    ('text(await tools.view_image({path: "a.png"})); text(await tools.exec_command({cmd:"git diff"}));',
+     ["vcs_output"]),                                                         # only exec results count
+    ('text(await tools.exec_command({cmd:"cat > probe.py <<\'EOF\'\\nprint(1)\\nEOF"}));\n'
+     'text(await tools.exec_command({cmd:"python probe.py"}));', ["command_output", "agent_generated_result"]),
+])
+def test_code_mode_kinds(script, want):
+    assert code_mode_kinds(script) == want
+
+
+def test_code_mode_is_not_read_as_a_shell_command():
+    # the whole script used to be parsed as one shell command (-> command_output / file_read)
+    assert label("x", "exec", {"command": JS_AWAIT}) == ("command_output", "content")
+    assert label("x", "exec", {"command": "ls -la"}) == ("directory_listing", "tool")  # a plain `exec` shell
+
+
+def test_code_mode_output_in_a_conversation():
+    conv = [{"type": "custom_tool_call", "call_id": "c", "name": "exec", "input": JS_AWAIT},
+            {"type": "custom_tool_call_output", "call_id": "c", "output": [{"type": "input_text", "text": "x"}]}]
+    r = label_conversation(conv)[0]
+    assert r["how"] == "code_mode" and r["call_kinds"] == ["file_read", "search_result"]
+    assert code_mode_kinds_by_position(conv) == {(1, None): ["file_read", "search_result"]}
+    assert kinds_by_position(conv) == {}           # the proxy lines code mode up per result instead
+
+
+def test_content_fallback_finds_results_nested_by_the_script():
+    nested = json.dumps({"i": 0, "status": "fulfilled", "value": {
+        "chunk_id": "a", "wall_time_seconds": 0.1, "exit_code": 0,
+        "output": "".join(f"{n}\tvalue_{n} = compute({n})\n" for n in range(1, 40))}})
+    assert kind_from_content(nested) == "file_read"

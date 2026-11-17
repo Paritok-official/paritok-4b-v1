@@ -49,6 +49,10 @@ SHELL_TOOLS = {"bash", "powershell", "shell", "exec", "exec_command", "execute_b
                "write_stdin", "bashoutput", "shell_command"}
 CODE_CELL_TOOLS = {"execute_ipython_cell", "python", "run_python", "code_interpreter", "jupyter"}
 WRITE_TOOLS = {"write", "create_file", "write_file", "create"}
+# Codex code mode: `exec` takes JavaScript that calls other tools as `tools.<name>(...)`
+# (Codex 0.169 + gpt-6.x by default). Not a shell: the commands are inside the script.
+CODE_MODE_TOOLS = {"exec"}
+CODE_MODE_EXEC_TOOLS = ("exec_command", "write_stdin")   # calls whose results are exec result objects
 
 
 def _norm_tool(tool: str | None) -> str:
@@ -149,8 +153,9 @@ def _runs_agent_file(producer: str, agent_files: set[str]) -> bool:
 
 
 # a compound command prints several things; the most specific source wins, but a trailing `ls` does not
-# turn a build or a curl into a directory listing
-_PRIORITY = ("agent_generated_result", "test_output", "vcs_output", "search_result", "file_read",
+# turn a build or a curl into a directory listing. A file read beats a search in the same command
+# (`cat a.py; rg foo`): the file is most of the output, and file content must keep its line numbers.
+_PRIORITY = ("agent_generated_result", "test_output", "vcs_output", "file_read", "search_result",
              "command_output", "directory_listing")
 
 
@@ -206,6 +211,102 @@ def kind_from_command(command, agent_files: set[str] | None = None) -> str:
     return "command_output"
 
 
+# ── 2b. Codex code mode ──────────────────────────────────────────────────────────────────
+
+_TOOLS_CALL = re.compile(r"\btools\.([A-Za-z_]\w*)\s*\(")
+_JS_CMD_KEY = re.compile(r"""(?:^|[\s{,])["']?(?:cmd|command)["']?\s*:\s*""")
+_JS_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
+
+
+def is_code_mode_script(tool: str | None, script) -> bool:
+    return (_norm_tool(tool) in CODE_MODE_TOOLS and isinstance(script, str)
+            and _TOOLS_CALL.search(script) is not None)
+
+
+def _js_inner(src: str, start: int) -> str:
+    """Text from `start` up to the bracket that closes the one just before it (strings skipped)."""
+    depth, i, quote = 1, start, None
+    while i < len(src):
+        c = src[i]
+        if quote:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in "\"'`":
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return src[start:i]
+        i += 1
+    return src[start:]
+
+
+def _js_string(src: str) -> str | None:
+    """The JS string literal ('…', "…" or `…`) at the start of `src`, unescaped."""
+    if not src or src[0] not in "\"'`":
+        return None
+    quote, out, j = src[0], [], 1
+    while j < len(src):
+        c = src[j]
+        if c == "\\" and j + 1 < len(src):
+            n = src[j + 1]
+            if n == "u" and re.match(r"[0-9a-fA-F]{4}", src[j + 2:j + 6]):
+                out.append(chr(int(src[j + 2:j + 6], 16)))
+                j += 6
+                continue
+            out.append(_JS_ESCAPES.get(n, n))
+            j += 2
+            continue
+        if c == quote:
+            return "".join(out)
+        out.append(c)
+        j += 1
+    return None
+
+
+def code_mode_calls(script: str) -> list[tuple[str, str]]:
+    """(tool name, command) for every `tools.<name>(…)` call in a code-mode script, in source
+    order. The command is the literal `cmd` / `command` argument ('' when it isn't a literal,
+    e.g. a variable); a template literal keeps its `${…}` placeholders."""
+    calls = []
+    for m in _TOOLS_CALL.finditer(script or ""):
+        args = _js_inner(script, m.end())
+        cmd = ""
+        key = _JS_CMD_KEY.search(args)
+        if key:
+            value = args[key.end():].lstrip()
+            if value[:1] == "[":
+                parts = [_js_string(p.group(0)) for p in re.finditer(
+                    r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`", _js_inner(value, 1))]
+                cmd = unwrap_shell([p for p in parts if p is not None])
+            else:
+                cmd = _js_string(value) or ""
+        calls.append((m.group(1), cmd))
+    return calls
+
+
+def code_mode_kinds(script: str, agent_files: set[str] | None = None) -> list[str | None]:
+    """Kind of each exec_command / write_stdin result a code-mode script asks for, in source
+    order (None when the command isn't a literal). Other tool calls are not counted: their
+    results are not exec result objects."""
+    files = set(agent_files or ())
+    kinds: list[str | None] = []
+    for name, cmd in code_mode_calls(script):
+        if name not in CODE_MODE_EXEC_TOOLS:
+            continue
+        if cmd:
+            kinds.append(kind_from_command(cmd, files))
+            files |= written_scripts(cmd)
+        else:
+            kinds.append("command_output" if name == "write_stdin" else None)
+    return kinds
+
+
 def _command_of(tool_input) -> str:
     inp = tool_input if isinstance(tool_input, dict) else {}
     c = inp.get("command") or inp.get("cmd") or inp.get("script") or ""
@@ -239,6 +340,8 @@ def kind_from_tool(tool: str | None, tool_input: dict | None = None,
         return "directory_listing"
     if t in CODE_CELL_TOOLS:
         return "agent_generated_result"
+    if is_code_mode_script(t, inp.get("command")):
+        return None                                   # several commands inside: see code_mode_kinds
     if t in SHELL_TOOLS:
         cmd = _command_of(inp)
         return kind_from_command(cmd, agent_files) if cmd else None
@@ -289,17 +392,37 @@ _TOOLCALL_KIND = {"think": "assistant_thinking", "task_tracker": "meta_action", 
                   "str_replace_editor": "file_operation", "execute_bash": "bash_command", "bash": "bash_command"}
 
 
+_EXEC_RESULT_KEYS = frozenset({"chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count"})
+
+
+def _codex_exec_outputs(v, depth: int = 0) -> list[str]:
+    """The `output` of every Codex exec_command result object inside parsed JSON, in order."""
+    if depth > 8:
+        return []
+    if isinstance(v, dict):
+        keys = set(v) - {"output"}
+        if isinstance(v.get("output"), str) and keys and keys <= _EXEC_RESULT_KEYS:
+            return [v["output"]]
+        return [o for x in v.values() for o in _codex_exec_outputs(x, depth + 1)]
+    if isinstance(v, list):
+        return [o for x in v for o in _codex_exec_outputs(x, depth + 1)]
+    return []
+
+
 def unwrap_envelope(text: str) -> tuple[str, str] | None:
     """A tool result delivered as JSON: (inner text, envelope), else None.
     Codex exec_command: {"chunk_id", "exit_code", "output", "wall_time_seconds", ...};
     MCP: {"content": [{"type": "text", "text": ...}], "isError": ...}."""
     s = (text or "").strip()
-    if not s.startswith("{"):
+    if not s.startswith(("{", "[")):
         return None
     try:
         j = json.loads(s)
     except ValueError:
         return None
+    nested = _codex_exec_outputs(j)       # code mode: results alone, in arrays, or nested by the script
+    if nested:
+        return "\n".join(nested), "codex_exec"
     if not isinstance(j, dict):
         return None
     for key in ("output", "content", "result", "value", "text", "stdout"):
@@ -437,7 +560,9 @@ def label_conversation(messages: list[dict]) -> list[dict]:
           {"type": "function_call" | "custom_tool_call", "call_id", "name", "arguments" | "input"} -> {"type": "..._output", "call_id", "output"}
     Scripts the agent writes along the way are tracked, so running one later is agent_generated_result.
     Returns one dict per tool output: {"index", "block", "tool", "kind", "how"} (block: position inside
-    an Anthropic user message, else None)."""
+    an Anthropic user message, else None). A Codex code-mode output (`exec` running JavaScript)
+    has how="code_mode" and "call_kinds": the kind of each exec_command the script ran, in order;
+    its "kind" is that kind when they all agree, else sniffed from the content."""
     calls: dict = {}
     unanswered: list = []           # chat-format calls in order, for tool messages without an id
     files: set[str] = set()
@@ -445,6 +570,16 @@ def label_conversation(messages: list[dict]) -> list[dict]:
 
     def emit(i, block, call, content):
         name, args = call if call else (None, {})
+        script = args.get("command") if isinstance(args, dict) else None
+        if is_code_mode_script(name, script):
+            call_kinds = code_mode_kinds(script, files)
+            agreed = set(call_kinds)
+            k = call_kinds[0] if len(agreed) == 1 and call_kinds[0] else kind_from_content(_text_of(content))
+            out.append({"index": i, "block": block, "tool": name, "kind": k, "how": "code_mode",
+                        "call_kinds": call_kinds})
+            for _, cmd in code_mode_calls(script):
+                files.update(written_scripts(cmd))
+            return
         k, how = label(_text_of(content), name, args, files)
         out.append({"index": i, "block": block, "tool": name, "kind": k, "how": how})
         if name:
@@ -506,6 +641,17 @@ def wire_kind(kind: str | None, scheme: str = "v1") -> str | None:
     if not kind or scheme == "v2":
         return kind
     return V1_KIND.get(kind, kind)
+
+
+def code_mode_kinds_by_position(messages) -> dict:
+    """{(message index, block index or None): [kind of each exec_command the script ran]} for
+    every Codex code-mode output. The proxy lines these up with the results printed in the
+    output. Never raises."""
+    try:
+        return {(r["index"], r["block"]): r["call_kinds"]
+                for r in label_conversation(messages or []) if r["how"] == "code_mode"}
+    except Exception:
+        return {}
 
 
 def kinds_by_position(messages) -> dict:

@@ -217,3 +217,68 @@ def test_codex_items_get_the_kind_of_their_call_and_only_file_reads_are_numbered
     # the file read is line-numbered for the model; the script's printout is not dressed up as a file
     assert seen[0]["model_input"].startswith("1\t")
     assert seen[1]["model_input"] == seen[1]["content"]
+
+
+# ── Codex code mode: one `exec` call runs several commands ──
+# Shapes and scripts from live Codex 0.169.0 + gpt-6.1-sol sessions.
+
+STATUS = "Script completed\nWall time 0.4 seconds\nOutput:\n"
+CODE = "".join(f"def f{i}(x):\r\n    return x + {i}\r\n" for i in range(40))
+HITS = "".join(f"src/m.py:{2 * i + 1}:def f{i}(x):\n" for i in range(40))
+
+
+def _result(output, chunk="8846d4"):
+    return ('{"chunk_id":"%s","wall_time_seconds":0.0000194,"exit_code":0,"original_token_count":574,"output":%s}'
+            % (chunk, json.dumps(output)))
+
+
+def test_code_mode_results_line_up_with_the_scripts_commands():
+    from paritok.proxy.server import _code_mode_block_kinds
+    kinds = ["file_read", "search_result"]
+    # one result per block (text(await ...)), after the status block
+    assert _code_mode_block_kinds([STATUS, _result(CODE), _result(HITS)], kinds) == \
+        [[], ["file_read"], ["search_result"]]
+    # both results in one printed array
+    assert _code_mode_block_kinds([STATUS, "[%s,%s]" % (_result(CODE), _result(HITS))], kinds) == \
+        [[], ["file_read", "search_result"]]
+    # a single call site (e.g. in a loop) covers every result
+    assert _code_mode_block_kinds([STATUS, _result(CODE), _result(CODE)], ["file_read"]) == \
+        [[], ["file_read"], ["file_read"]]
+    # results that don't match the calls: sniff each from its content
+    assert _code_mode_block_kinds([STATUS, _result(CODE)], kinds) == [[], [None]]
+
+
+@pytest.mark.parametrize("script, blocks, want_kinds, numbered", [
+    # text(await ...) per command
+    ('text(await tools.exec_command({cmd:"Get-Content src/m.py"}));\n'
+     'text(await tools.exec_command({cmd:"rg -n \'def \' src"}));\n',
+     [STATUS, _result(CODE), _result(HITS, "35d19e")], ["file_read", "search_result"], [True, False]),
+    # Promise.allSettled + text({i, ...results[i]})
+    ('const results = await Promise.allSettled([tools.exec_command({cmd:"Get-Content src/m.py"}),'
+     'tools.exec_command({cmd:"rg -n \'def \' src"})]);'
+     'for(let i=0;i<results.length;i++)text({i,...results[i]});',
+     [STATUS, '{"i":0,"status":"fulfilled","value":%s}' % _result(CODE),
+      '{"i":1,"status":"fulfilled","value":%s}' % _result(HITS, "35d19e")],
+     ["file_read", "search_result"], [True, False]),
+    # one command, plain text: text(r.output)
+    ('const r = await tools.exec_command({cmd:"Get-Content src/m.py; rg -n \'def \' src"});text(r.output);',
+     [STATUS, CODE + HITS], ["file_read"], [True]),
+])
+def test_code_mode_proxy_compresses_each_result_with_its_own_kind(monkeypatch, script, blocks, want_kinds,
+                                                                  numbered):
+    starlette = pytest.importorskip("starlette.testclient")
+    from paritok.proxy.server import create_app
+    seen = _capture_pipeline(monkeypatch)
+    up = _Upstream({"id": "r", "object": "response", "status": "completed", "output": [
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}})
+    app = create_app(http_client=httpx.AsyncClient(transport=up), openai_base_url="http://upstream.test")
+    items = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix it"}]},
+             {"type": "custom_tool_call", "call_id": "c", "name": "exec", "input": script},
+             {"type": "custom_tool_call_output", "call_id": "c",
+              "output": [{"type": "input_text", "text": b} for b in blocks]}]
+    req = {"model": "gpt-6.1-sol", "input": items, "stream": False, "tools": [{"type": "custom", "name": "exec"}]}
+    with starlette.TestClient(app) as client:
+        assert client.post("/v1/responses", json=req).status_code == 200
+    assert [s["kind_detail"] for s in seen] == want_kinds
+    assert [s["model_input"].startswith("1\t") for s in seen] == numbered
