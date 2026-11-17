@@ -481,13 +481,114 @@ def _to_responses_tool(t: dict) -> dict:
 
 
 # Header lines codex prepends when it reads a file through the shell: a
-# command-output frame (Exit code / Wall time / Total output lines / Output:).
-# Those extra lines tip classify_kind_from_content over its log_output line-count
-# heuristic, so a *source file* gets the aggressive "other" prompt that drops the
-# code and hallucinates. We only strip this exact frame; nothing else is touched.
+# command-output frame. Those extra lines tip classify_kind_from_content over its
+# log_output line-count heuristic, so a *source file* gets the aggressive "other"
+# prompt that drops the code and hallucinates. We only strip these frame lines;
+# nothing else is touched. The frame has changed across codex versions / tools:
+#   shell_command:          Exit code: 0 / Wall time: 0.1 seconds / Output:
+#   exec_command (direct):  Chunk ID: 7b541d / Wall time: 0.3155 seconds /
+#                           Process exited with code 0 (or Process running with
+#                           session ID N) / Original token count: 748 / Output:
+#   exec (code mode):       Script completed / Wall time 0.4 seconds / Output:
+#   truncated output:       Warning: truncated output (...) / Total output lines: N
 _CODEX_OUTPUT_HEADER_PREFIXES = (
-    "Exit code:", "Wall time:", "Total output lines:", "Output:",
+    "Exit code:", "Wall time", "Total output lines:", "Output:",
+    "Chunk ID:", "Process exited with code", "Process running with session ID",
+    "Original token count:", "Warning: truncated output",
+    "Script completed", "Script failed", "Script running with cell ID", "Script terminated",
 )
+
+# Codex's code mode (`exec`: the model writes JavaScript that calls
+# `tools.exec_command(...)`) hands each result back as a compact JSON object,
+# codex-rs tools/context.rs `code_mode_result`:
+#   {"chunk_id":"8846d4","wall_time_seconds":0.0000194,"exit_code":0,
+#    "original_token_count":574,"output":"<the command's output, \r\n-escaped>"}
+# (`session_id` instead of `exit_code` while the process is still running).
+_CODEX_ENVELOPE_KEYS = frozenset(
+    {"chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count"}
+)
+
+
+def _is_codex_exec_result(v) -> bool:
+    if not isinstance(v, dict) or not isinstance(v.get("output"), str):
+        return False
+    keys = set(v) - {"output"}
+    return bool(keys) and keys <= _CODEX_ENVELOPE_KEYS
+
+
+def _split_codex_envelopes(text: str):
+    """(outputs, rewrap) when `text` is JSON holding codex exec_command results, else None.
+
+    In code mode the model's own JavaScript decides what gets printed, so a result
+    can arrive alone (`text(await tools.exec_command(...))`), in an array, or nested
+    (`text({i, ...results[i]})` after Promise.allSettled gives
+    `{"i":0,"status":"fulfilled","value":{<result>}}`). Every result object found
+    anywhere in the JSON is collected, in document order.
+
+    Each result's command output sits JSON-escaped in `output`, so the compressor
+    would see ONE line of `\\n`-escaped text, which it never trained on: it either
+    fails to shrink it (the hosted no-gain guard then returns the original) or
+    rewrites it into plausible code that isn't in the file. So each output is
+    compressed unwrapped, then put back with `rewrap(new_outputs)`.
+
+    rewrap swaps only the `output` values and keeps every other byte (key order,
+    `0.0000194`-style numbers, the script's own fields), so the same item re-sent
+    next turn yields the same request bytes (prompt cache). `rewrap(outputs) == text`.
+    Other JSON (a package.json, an MCP result) has no such object and returns None.
+    """
+    s = text.strip()
+    if not (s[:1] in "{[" and '"output"' in s):
+        return None
+    try:
+        root = json.loads(s)
+    except ValueError:
+        return None
+    found: list[dict] = []
+
+    def walk(v, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if _is_codex_exec_result(v):
+            found.append(v)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x, depth + 1)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x, depth + 1)
+
+    walk(root)
+    if not found:
+        return None
+    outputs = [d["output"] for d in found]
+    # Where each encoded output sits in the raw text (document order = DFS order).
+    spans: list[tuple[int, int]] | None = []
+    pos = 0
+    for out in outputs:
+        encoded = json.dumps(out, ensure_ascii=False)
+        m = re.compile(r'"output"\s*:\s*' + re.escape(encoded)).search(text, pos)
+        if m is None:  # escaped differently than Python would (e.g. >)
+            spans = None
+            break
+        spans.append((m.end() - len(encoded), m.end()))
+        pos = m.end()
+
+    def rewrap(new_outputs: list[str]) -> str:
+        new_outputs = list(new_outputs)
+        if new_outputs == outputs:
+            return text
+        if spans is not None:
+            parts, last = [], 0
+            for (a, b), new in zip(spans, new_outputs):
+                parts += [text[last:a], json.dumps(new, ensure_ascii=False)]
+                last = b
+            parts.append(text[last:])
+            return "".join(parts)
+        for d, new in zip(found, new_outputs):  # rebuild the (parsed) object
+            d["output"] = new
+        return json.dumps(root, ensure_ascii=False, separators=(",", ":"))
+
+    return outputs, rewrap
 
 
 def _split_codex_header(content: str) -> tuple[str, str]:
@@ -1051,16 +1152,32 @@ def create_app(
         codex_read_bodies: list[str] = []
 
         def _compress_codex_text(text: str) -> str | None:
-            """Compress one shell/tool-output string. Splits codex's command-output
-            header off so only the body is compressed (byte-identical to what every
-            other agent feeds the model), re-attaches it, records stats + the read
-            body. Returns the new text, or None when compression is skipped."""
+            """Compress one shell/tool-output string. Code-mode results arrive as
+            JSON with each command's output inside: compress those outputs and put
+            them back. Returns the new text, or None when compression is skipped."""
             if not isinstance(text, str) or not text.strip():
+                return None
+            envelopes = _split_codex_envelopes(text)
+            if envelopes is not None:
+                outputs, rewrap = envelopes
+                new = [_compress_codex_output(o) for o in outputs]
+                if all(n is None for n in new):
+                    return None
+                return rewrap([o if n is None else n for o, n in zip(outputs, new)])
+            return _compress_codex_output(text)
+
+        def _compress_codex_output(text: str) -> str | None:
+            """Splits codex's command-output header off so only the body is
+            compressed (byte-identical to what every other agent feeds the model),
+            re-attaches it, records stats + the read body."""
+            if not text.strip():
                 return None
             # codex reads via PowerShell (CRLF); normalize to LF so the content is
             # in-distribution for the compressor, like every other agent's output.
             text = _normalize_crlf(text)
             header, seg_body = _split_codex_header(text)
+            if not seg_body.strip():
+                return None  # a bare frame (e.g. code mode's "Script completed" block)
             if len(seg_body) > 40:
                 codex_read_bodies.append(strip_read_line_numbers(seg_body))
             # codex reads files without line numbers (out-of-distribution for the
