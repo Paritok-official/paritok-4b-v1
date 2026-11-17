@@ -92,6 +92,12 @@ class GpuServerStrategy:
         upstream_model = kwargs.get("upstream_model")
         if upstream_model:
             payload["upstream_model"] = upstream_model
+        # The precise kind the proxy decided from the producing tool call (`kind` above is
+        # that kind mapped for the deployed model). The model ignores it; the server can
+        # store it, so usage statistics no longer have to guess the kind from content.
+        kind_detail = kwargs.get("kind_detail")
+        if kind_detail:
+            payload["kind_detail"] = kind_detail
         headers = {"User-Agent": _USER_AGENT}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"

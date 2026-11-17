@@ -34,7 +34,7 @@ from paritok.strategies.local_model import (
     _TOKENIZER_SLACK,
 )
 from paritok.strategies.prompts import system_prompt_for_kind
-from paritok.strategies.tagger import classify_kind_from_content
+from paritok.strategies.kind_label import kind_from_content, wire_kind
 from paritok.token_counter import _DEFAULT_ENCODING, _get_encoder, count_tokens
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,7 @@ class CompressionPipeline:
         source: str | None = None,
         upstream_model: str | None = None,
         model_input: str | None = None,
+        kind_detail: str | None = None,
     ) -> CompressionResult:
         """Compress content via the local SEG model.
 
@@ -222,7 +223,12 @@ class CompressionPipeline:
                 Defaults to `content`.
             query: USER INTENT — the agent's current task. Drives keep/drop.
             level: SEG level L0-L3 (target ratio). Defaults to the model default (L0).
-            kind: SEG kind (file_read, log_output, ...). If None, sniffed from content.
+            kind: SEG kind sent to the model, used as given (file_read, log_output, ...).
+                If None, it is derived from `kind_detail` (or, failing that, sniffed from
+                the content) and mapped by `compression.kind_scheme`.
+            kind_detail: The tool-output kind the caller decided from the producing tool
+                call (paritok.strategies.kind_label: search_result, test_output,
+                agent_generated_result, ...). Also forwarded to the backend as is.
             target_ratio: Legacy ratio knob ("30%"/"0.3"), mapped to a level when
                 `level` is not given. Prefer `level`.
             source: Optional source identifier (e.g. a file_path from Read).
@@ -317,12 +323,14 @@ class CompressionPipeline:
         # only: the 4B compresses the bare form much better, and content (token count /
         # shadow store / expand_context) keeps the exact bytes the agent sent.
         model_text = _depad_line_numbers(model_text)
-        # Classify kind centrally so every backend receives a real kind. Without
-        # this only LocalModelStrategy sniffs it internally; GpuServerStrategy would
-        # forward kind=None to the server. Classify on model_text (what the model
-        # actually sees), matching the local fallback.
+        # Decide the kind here, locally, so every backend (local model or GPU server)
+        # receives a real one. The proxy passes kind_detail from the tool call that
+        # produced the output; without one, sniff it from model_text (what the model
+        # actually sees). Then map it onto the names the deployed model was trained on.
         if kind is None:
-            kind = classify_kind_from_content(model_text)
+            if kind_detail is None:
+                kind_detail = kind_from_content(model_text)
+            kind = wire_kind(kind_detail, cfg.kind_scheme)
         # Cap the intent so system + intent + content chunk always fit num_ctx. A huge
         # query otherwise overflows the window and the backend 400s -> uncompressed
         # passthrough. Trims only the compressor's keep/drop guidance, never the real
@@ -335,6 +343,7 @@ class CompressionPipeline:
                 query=query,
                 level=level,
                 kind=kind,
+                kind_detail=kind_detail,
                 target_ratio=target_ratio,
                 upstream_model=upstream_model,
             )

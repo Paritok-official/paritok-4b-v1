@@ -31,6 +31,7 @@ from paritok.pipelines.virtual import (
     is_virtual_tool_call,
 )
 from paritok.pipelines.tool_discovery import ToolDiscoveryPipeline
+from paritok.strategies.kind_label import kinds_by_position
 from paritok.storage import ShadowStorage, build_shadow_storage
 
 
@@ -461,21 +462,26 @@ def _compress_messages(
     query: str | None = None,
     upstream_model: str = "",
 ) -> list[dict]:
-    """Walk messages and compress tool_result content blocks."""
+    """Walk messages and compress tool_result content blocks.
+
+    Each block's kind comes from the tool_use that produced it (Read -> file_read,
+    Bash `pytest` -> test_output, Bash `python -c` -> agent_generated_result, ...),
+    so the model gets the right prompt instead of a guess from the text."""
     tool_index = _build_tool_use_index(messages)
+    kinds = kinds_by_position(messages)
     result = []
-    for msg in messages:
+    for mi, msg in enumerate(messages):
         content = msg.get("content")
         if msg.get("role") == "user" and isinstance(content, list):
             new_blocks = []
-            for block in content:
+            for bi, block in enumerate(content):
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     source = _source_from_tool_use(
                         tool_index.get(block.get("tool_use_id", ""))
                     )
                     block = _compress_block(
                         block, pipeline, stats, query=query, source=source,
-                        upstream_model=upstream_model,
+                        upstream_model=upstream_model, kind_detail=kinds.get((mi, bi)),
                     )
                 new_blocks.append(block)
             result.append({**msg, "content": new_blocks})
@@ -492,13 +498,14 @@ def _compress_block(
     query: str | None = None,
     source: str | None = None,
     upstream_model: str = "",
+    kind_detail: str | None = None,
 ) -> dict:
     """Compress the content inside a tool_result block."""
     content = block.get("content", "")
 
     if isinstance(content, str) and content.strip():
         cr = pipeline.compress(content, query=query, source=source,
-                               upstream_model=upstream_model)
+                               upstream_model=upstream_model, kind_detail=kind_detail)
         stats.record_result(cr)
         stats.add_sample(content, cr, source)
         return {**block, "content": cr.compressed}
@@ -510,7 +517,8 @@ def _compress_block(
                 text = item.get("text", "")
                 if text.strip():
                     cr = pipeline.compress(text, query=query, source=source,
-                                           upstream_model=upstream_model)
+                                           upstream_model=upstream_model,
+                                           kind_detail=kind_detail)
                     stats.record_result(cr)
                     stats.add_sample(text, cr, source)
                     new_content.append({**item, "text": cr.compressed})

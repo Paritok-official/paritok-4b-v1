@@ -647,6 +647,7 @@ def create_app(
     from paritok.proxy.adapters import anthropic as anth_adapter
     from paritok.proxy.adapters import openai as oai_adapter
     from paritok.proxy.adapters import responses as resp_adapter
+    from paritok.strategies.kind_label import kinds_by_position
     from paritok.token_counter import count_tokens
 
     async def _read_json_body(request):
@@ -912,7 +913,9 @@ def create_app(
         # either way, compress it, and put it back in the original shape (see
         # _extract_tool_text). gptme/Claude-Code-OpenAI use the list form; string-only
         # handling here silently skipped their file reads. Reuses the current-intent
-        # `query` computed above.
+        # `query` computed above. Each message's kind comes from the assistant
+        # tool_call that produced it (matched by tool_call_id).
+        tool_kinds = kinds_by_position(parsed.messages)
         for i, msg in enumerate(parsed.messages):
             if msg.get("role") != "tool":
                 continue
@@ -920,7 +923,8 @@ def create_app(
             if not (text and text.strip()):
                 continue
             cr = engine.pipeline.compress(text, query=query,
-                                          upstream_model=body.get("model", ""))
+                                          upstream_model=body.get("model", ""),
+                                          kind_detail=tool_kinds.get((i, None)))
             if not cr.metadata.get("skipped"):
                 parsed.messages[i] = {**msg, "content": rewrap(cr.compressed)}
                 stats.original_tokens += cr.original_tokens
@@ -1050,7 +1054,12 @@ def create_app(
         # what codex_edit_recovery maps a reflowed shell `-replace` back onto.
         codex_read_bodies: list[str] = []
 
-        def _compress_codex_text(text: str) -> str | None:
+        # Kind of each function_call_output, from the function_call that produced it
+        # (matched by call_id): `sed -n` / `cat` -> file_read, `rg` -> search_result,
+        # `python -c` -> agent_generated_result, ...
+        codex_kinds = kinds_by_position(input_items)
+
+        def _compress_codex_text(text: str, kind_detail: str | None = None) -> str | None:
             """Compress one shell/tool-output string. Splits codex's command-output
             header off so only the body is compressed (byte-identical to what every
             other agent feeds the model), re-attaches it, records stats + the read
@@ -1067,9 +1076,14 @@ def create_app(
             # compressor). Feed the model a line-numbered form so it compresses like
             # every other agent's Read output, but keep seg_body (the real, unnumbered
             # content) as `content` so ratio/stats/expand reflect what the agent sent.
+            # Only for a file read (or when the call is unknown): code that a search or
+            # the agent's own script printed is not a file and must not look like one.
+            numbered = (_ensure_line_numbers(seg_body)
+                        if kind_detail in (None, "file_read") else seg_body)
             cr = engine.pipeline.compress(seg_body, query=query,
-                                          model_input=_ensure_line_numbers(seg_body),
-                                          upstream_model=parsed.model)
+                                          model_input=numbered,
+                                          upstream_model=parsed.model,
+                                          kind_detail=kind_detail)
             if cr.metadata.get("skipped"):
                 return None
             stats.original_tokens += cr.original_tokens
@@ -1082,7 +1096,9 @@ def create_app(
             # compression can't freeze health checks / count_tokens / other sessions.
             def _compress_all_items() -> None:
                 for i, item in enumerate(input_items):
-                    new_item, changed = _compress_responses_item(item, _compress_codex_text)
+                    kind_detail = codex_kinds.get((i, None))
+                    new_item, changed = _compress_responses_item(
+                        item, lambda t, k=kind_detail: _compress_codex_text(t, k))
                     if changed:
                         input_items[i] = new_item
 

@@ -35,6 +35,7 @@ compression:
   min_tokens: 512          # skip compression below this
   max_tokens: 50000        # skip compression above this
   refusal_threshold: 0.05  # must save at least 5% or keep the original
+  kind_scheme: v1          # kind names sent to the model: v1 = names paritok-4b-v1 was trained on, v2 = as labelled
 
 history:
   enabled: true

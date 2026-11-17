@@ -54,8 +54,13 @@ class CompressionConfig:
     min_tokens: int = 512
     max_tokens: int = 50000
     refusal_threshold: float = 0.05
+    # Kind names sent to the compression model. The proxy labels each tool output from the
+    # tool call that produced it (paritok.strategies.kind_label); "v1" maps those labels onto
+    # the names paritok-4b-v1 was trained on, "v2" sends them as is (for a model trained on them).
+    kind_scheme: str = "v1"
 
     def __post_init__(self):
+        assert self.kind_scheme in ("v1", "v2"), f"kind_scheme must be 'v1' or 'v2', got {self.kind_scheme!r}"
         assert self.min_tokens >= 0, f"min_tokens must be >= 0, got {self.min_tokens}"
         assert self.max_tokens > self.min_tokens, f"max_tokens ({self.max_tokens}) must be > min_tokens ({self.min_tokens})"
         assert 0.0 <= self.refusal_threshold <= 1.0, f"refusal_threshold must be 0.0-1.0, got {self.refusal_threshold}"
